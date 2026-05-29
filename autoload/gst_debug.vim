@@ -12,8 +12,12 @@ var s_level_map = {
       \ 'MEMDUMP': 9,
       \ }
 
+def ApplyIndentation()
+    silent! normal gg=G
+enddef
 
 export def Setup()
     const curr_bufnr = bufnr("%")
     setbufvar(curr_bufnr, '&filetype',  'gstreamerlogs')
+    ApplyIndentation()
 enddef
