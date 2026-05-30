@@ -27,7 +27,6 @@ enddef
 
 # Generic intentation
 setlocal indentexpr=g:GstreamerLogIndent()
-setlocal indentkeys=o,O,*<CR>
 
 # Line wrapping
 setlocal wrap

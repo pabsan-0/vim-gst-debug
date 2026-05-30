@@ -1,7 +1,25 @@
 vim9script
 
-def DetectGstreamerLog()
-    if &filetype != '' && &filetype !=# 'text' && &filetype !=# 'log'
+def FTypeSet()
+    # Misc optimizations targeting large files
+    setlocal noswapfile
+    setlocal noundofile
+    setlocal foldmethod=manual
+    setlocal nofoldenable
+
+    # Disable copilot on the current buffer
+    # Proven to slow writing a LOT
+    b:copilot_enabled = 0
+
+    # Manually load plugin files instead of doing `setlocal filetype=gstreamerlogs`
+    # Skips sending events that clog vim for large files (>1GB)
+    runtime! indent/gstreamerlogs.vim
+    runtime! syntax/gstreamerlogs.vim
+enddef
+
+def FTypeDetect()
+    # If the filetype is already set to something, bail out
+    if &filetype != ''
         return
     endif
 
@@ -15,12 +33,13 @@ def DetectGstreamerLog()
             match_count += 1
         endif
     endfor
+
     if match_count >= 5
-        setfiletype gstreamerlogs
+        FTypeSet()
     endif
 enddef
 
 augroup GstreamerLogDetect
     autocmd!
-    autocmd BufRead,BufNewFile * DetectGstreamerLog()
+    autocmd BufRead,BufNewFile *.log FTypeDetect()
 augroup END
