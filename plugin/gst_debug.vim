@@ -5,6 +5,10 @@ if exists('g:loaded_gst_debug')
 endif
 g:loaded_gst_debug = 1
 
+# TODO
+# g:gst_debug__indent_on_load = 1
+# g:gst_debug__large_file_threshold = 1
+
 # Parse environment here
 # TODO VIM_GST_DEBUG_SRC
 
