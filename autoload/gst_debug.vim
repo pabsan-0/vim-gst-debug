@@ -18,9 +18,8 @@ const s_regex_schema = [
     {name: 'thread',    precise: '0x\x\+',               loose: '\S',    sep: '\s\+'},
     {name: 'level',     precise: '[A-Z]\+',              loose: '[A-Z]', sep: '\s\+'},
     {name: 'category',  precise: '\S\+',                 loose: '\S',    sep: '\s\+'},
-    {name: 'file',      precise: '[^:]\+',               loose: '[^:]',  sep: ':'},
-    {name: 'lineno',    precise: '\d\+',                 loose: '\d',    sep: ':'},
-    {name: 'function',  precise: '[^:]\+',               loose: '[^:]',  sep: ':\s*'},
+    {name: 'source',    precise: '[^:]\+:\d\+:[^:]\+',   loose: '\S',    sep: ':'},
+    {name: 'element',   precise: '\%(<[^>]\+>\)\=',      loose: '[^>]',  sep: '\s*'},
     {name: 'message',   precise: '.*',                   loose: '.',     sep: ''}
 ]
 
@@ -63,14 +62,19 @@ def ParseLine(lnum: number): dict<any>
     result['thread']    = matches[3]
     result['level']     = matches[4]
     result['category']  = matches[5]
-    result['file']      = matches[6]
-    result['lineno']    = str2nr(matches[7])
-    result['function']  = matches[8]
-    result['message']   = matches[9]
+    result['source']    = matches[6]
+    result['element']   = trim(matches[7], "<>")
+    result['message']   = matches[8]
 
-    # Convoluted conveniences
-    result['levelnum']  = get(s_level_map, matches[4], -1)
-    result['fileline']  = result['file'] .. ":" .. result['lineno']
+    # Convoluted conveniences (not straight out of regex)
+    const src_parts = split(result['source'], ':')
+    result['u_file']     = src_parts[0]
+    result['u_lineno']   = str2nr(src_parts[1])
+    result['u_function'] = src_parts[2]
+
+    result['u_element_name'] = get(split(result['element'], '@'), 0, '')
+    result['u_levelnum'] = get(s_level_map, matches[4], -1)
+    result['u_fileline'] = result['u_file'] .. ":" .. result['u_lineno']
 
     # Look ahead to grab any lines that do not start with a timestamp
     var current_lnum = lnum + 1
