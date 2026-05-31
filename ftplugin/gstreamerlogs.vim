@@ -21,6 +21,10 @@ enddef
 OnLoad()
 
 
+# FIXME find better names!
+command! GstDebugParseLine gst_debug#ParseLineDebug()
+command! GstDebugSeekLine  gst_debug#SeekFieldDebug()
+
 # Faster saving for large files: :w is now :noautocmd w
 cnoreabbrev <expr> <buffer> w (getcmdtype() == ':' && getcmdline() == 'w') ? 'noautocmd w' : 'w'
 

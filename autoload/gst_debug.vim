@@ -1,6 +1,6 @@
 vim9script
 
-var s_level_map = {
+const s_level_map = {
       \ 'none':    0,
       \ 'ERROR':   1,
       \ 'WARNING': 2,
@@ -12,17 +12,223 @@ var s_level_map = {
       \ 'MEMDUMP': 9,
       \ }
 
+const s_regex_schema = [
+    {name: 'timestamp', precise: '\d\+:\d\+:\d\+\.\d\+', loose: '\S',    sep: '\s\+'},
+    {name: 'pid',       precise: '\d\+',                 loose: '\d',    sep: '\s\+'},
+    {name: 'thread',    precise: '0x\x\+',               loose: '\S',    sep: '\s\+'},
+    {name: 'level',     precise: '[A-Z]\+',              loose: '[A-Z]', sep: '\s\+'},
+    {name: 'category',  precise: '\S\+',                 loose: '\S',    sep: '\s\+'},
+    {name: 'file',      precise: '[^:]\+',               loose: '[^:]',  sep: ':'},
+    {name: 'lineno',    precise: '\d\+',                 loose: '\d',    sep: ':'},
+    {name: 'function',  precise: '[^:]\+',               loose: '[^:]',  sep: ':\s*'},
+    {name: 'message',   precise: '.*',                   loose: '.',     sep: ''}
+]
+
+
+###################################################
+##  Parsing
+###################################################
+
+export def ParseLineDebug()
+    var lnum = line('.')
+    var result = ParseLine(lnum)
+    if empty(result)
+        echom "Current Line does not match the GStreamer log header format."
+        return
+    endif
+    echom result
+enddef
+
+def ParseLineBuildRegex(): string
+    var regex = '^'
+    for field in s_regex_schema
+        regex ..= '\(' .. field.precise .. '\)' .. field.sep
+    endfor
+    return regex
+enddef
+
+def ParseLine(lnum: number): dict<any>
+    var result: dict<any> = {}
+    const pattern = ParseLineBuildRegex()
+
+    var line_str = getline(lnum)
+    var matches = matchlist(line_str, pattern)
+    if empty(matches)
+        return {}
+    endif
+
+    # Populate the initial dictionary
+    result['timestamp'] = matches[1]
+    result['pid']       = str2nr(matches[2])
+    result['thread']    = matches[3]
+    result['level']     = matches[4]
+    result['category']  = matches[5]
+    result['file']      = matches[6]
+    result['lineno']    = str2nr(matches[7])
+    result['function']  = matches[8]
+    result['message']   = matches[9]
+
+    # Convoluted conveniences
+    result['levelnum']  = get(s_level_map, matches[4], -1)
+    result['fileline']  = result['file'] .. ":" .. result['lineno']
+
+    # Look ahead to grab any lines that do not start with a timestamp
+    var current_lnum = lnum + 1
+    var last_lnum = line('$')
+    var timestamp_pattern = '^\d\+:\d\+:\d\+\.\d\+'
+
+    while current_lnum <= last_lnum
+        var next_line = getline(current_lnum)
+
+        if next_line =~ timestamp_pattern
+            break
+        endif
+
+        if result['message'] == ''
+            result['message'] = next_line
+        else
+            result['message'] ..= "\n" .. next_line
+        endif
+        current_lnum += 1
+    endwhile
+
+    return result
+enddef
+
+###################################################
+##  Seeking
+###################################################
+
+export def SeekFieldDebug()
+    var lnum = line('.')
+
+    for item in s_regex_schema
+        const name = item.name
+        echom name
+        echom SeekFieldBuildRegex(name, "FOOBAR")
+        echom
+    endfor
+enddef
+
+def SeekFieldBuildRegex(target_field: string, target_value: string, is_pcre: bool = false): string
+    var regex = '^'
+    var field_found = false
+    var star = '*'
+
+    for field in s_regex_schema
+        # Translate Vim's \+ to PCRE's + for external tools like ripgrep
+        var f_precise = is_pcre ? substitute(field.precise, '\\+', '+', 'g') : field.precise
+        var f_sep     = is_pcre ? substitute(field.sep, '\\+', '+', 'g')   : field.sep
+
+        if field.name == target_field
+            field_found = true
+            var safe_value = escape(target_value, '.\*$^~[]')
+            regex ..= field.loose .. star .. safe_value .. field.loose .. star .. f_sep
+            break
+        else
+            regex ..= f_precise .. f_sep
+        endif
+    endfor
+
+    if !field_found
+        echoerr "Unknown log field: " .. target_field
+        return ""
+    endif
+
+    return regex
+enddef
+
+
+###################################################
+##  Navigation
+###################################################
+
+def NextElement()
+enddef
+def NextLevel()
+enddef
+def NextThread()
+enddef
+
+def NextLevelError()
+enddef
+def NextLevelWarning()
+enddef
+def NextLevelFixme()
+enddef
+def NextLevelInfo()
+enddef
+def NextLevelDebug()
+enddef
+def NextLevelLog()
+enddef
+def NextLevelTrace()
+enddef
+def NextLevelMemdump()
+enddef
+
+
+def PrevElement()
+enddef
+def PrevLevel()
+enddef
+def PrevThread()
+enddef
+
+def PrevLevelError()
+enddef
+def PrevLevelWarning()
+enddef
+def PrevLevelFixme()
+enddef
+def PrevLevelInfo()
+enddef
+def PrevLevelDebug()
+enddef
+def PrevLevelLog()
+enddef
+def PrevLevelTrace()
+enddef
+def PrevLevelMemdump()
+enddef
+
+###################################################
+##  Info
+###################################################
+
+def ListElements()
+enddef
+def ListLevels()
+enddef
+def ListThreads()
+enddef
+
 ###################################################
 ##  Filters
 ###################################################
 
-# FilterThread
-# FilterElement
-# FilterBuffer (?)
+def FilterElement()
+enddef
+def FilterLevel()
+enddef
+def FilterThread()
+enddef
+
+# Always destructive, never constructive
+def FilterLevelLower()
+enddef
+
+def FilterBuffer()
+enddef
+def FilterText()
+enddef
+def FilterVisual()
+enddef
 
 def Filter()
-    bufnr_src = bufnr('%')
+    curr_buf = bufnr('%')
     curr_line = getline('.')
+
     # Parse current Line for current Filtering-whatever-Name
     # Parse current Line for current Timestamp and Thread (to retrieve location later)
 
@@ -41,6 +247,8 @@ def Filter()
     # Return to old line
 enddef
 
+def FilterReset()
+enddef
 
 ###################################################
 ##  Filetype
