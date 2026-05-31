@@ -46,6 +46,10 @@ def ParseLineBuildRegex(): string
     return regex
 enddef
 
+def ParseLineCurrent()
+    return ParseLine(line('.'))
+enddef
+
 def ParseLine(lnum: number): dict<any>
     var result: dict<any> = {}
     const pattern = ParseLineBuildRegex()
@@ -122,6 +126,7 @@ def SeekFieldBuildRegex(target_field: string, target_value: string, is_pcre: boo
     for field in s_regex_schema
         # Translate Vim's \+ to PCRE's + for external tools like ripgrep
         var f_precise = is_pcre ? substitute(field.precise, '\\+', '+', 'g') : field.precise
+        f_precise = is_pcre ? substitute(f_precise, '\\x', '[0-9a-fA-F]', 'g') : f_precise
         var f_sep     = is_pcre ? substitute(field.sep, '\\+', '+', 'g')   : field.sep
 
         if field.name == target_field
@@ -211,44 +216,39 @@ enddef
 ##  Filters
 ###################################################
 
-def FilterElement()
-enddef
-def FilterLevel()
-enddef
-def FilterThread()
-enddef
-
-# Always destructive, never constructive
 def FilterLevelLower()
+    # Similar to modifying GST_DEBUG= but after log is printed
 enddef
-
 def FilterBuffer()
+    # Opens a buffer with all unique ids for relevant fields, lets you delete to filter out
 enddef
 def FilterText()
+    # Arbitary grep from input
 enddef
 def FilterVisual()
+    # Arbitrary grep from visual selection
 enddef
 
-def Filter()
-    curr_buf = bufnr('%')
-    curr_line = getline('.')
+export def FilterField(field: string)
+    const [buffr, line, column; __] = getcurpos()
+    const obj = ParseLine(line)
+    const value = get(obj, field, '')
 
-    # Parse current Line for current Filtering-whatever-Name
-    # Parse current Line for current Timestamp and Thread (to retrieve location later)
-
-    # Is user on a view buffer?
-    if !getbufvar(bufnr_src, "gst_debug_is_view", false)
-        bufnr_src = CreateViewBuffer()
+    if value == ''
+        echom "Cannot parse " .. field .. " from current line"
+        return
     endif
 
-    # Grab original text buffer
-    if !getbufvar(-1, "gst_debug_original_file", false)
-        CreateViewBuffer()
+    const regex = SeekFieldBuildRegex(field, value, true)
+    execute $":%!grep -P '{regex}'"
+
+    # Search fails if match found at first line
+    const old_line_pattern = '^' .. obj.timestamp .. '\s\+' .. obj.pid .. '\s\+' .. obj.thread
+    cursor(1, 1)
+    if !search(old_line_pattern, 'W')
+        echom "Unexpected error: Can't find original line after filtering!"
     endif
-
-    # Populate view buffer with outcome of the parsing
-
-    # Return to old line
+    cursor(0, column)
 enddef
 
 def FilterReset()

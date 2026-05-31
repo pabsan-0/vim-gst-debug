@@ -25,6 +25,10 @@ OnLoad()
 command! GstDebugParseLine gst_debug#ParseLineDebug()
 command! GstDebugSeekLine  gst_debug#SeekFieldDebug()
 
+command! FilterElement  gst_debug#FilterField("u_element_name")
+command! FilterLevel    gst_debug#FilterField("level")
+command! FilterThread   gst_debug#FilterField("thread")
+
 # Faster saving for large files: :w is now :noautocmd w
 cnoreabbrev <expr> <buffer> w (getcmdtype() == ':' && getcmdline() == 'w') ? 'noautocmd w' : 'w'
 
