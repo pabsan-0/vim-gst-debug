@@ -12,6 +12,7 @@ const s_level_map = {
       \ 'MEMDUMP': 9,
       \ }
 
+# Vim can only have 9 groups in a single regex. These are the basic blocks
 const s_regex_schema = [
     {name: 'timestamp', precise: '\d\+:\d\+:\d\+\.\d\+', loose: '\S',    sep: '\s\+'},
     {name: 'pid',       precise: '\d\+',                 loose: '\d',    sep: '\s\+'},
@@ -22,6 +23,12 @@ const s_regex_schema = [
     {name: 'element',   precise: '\%(<[^>]\+>\)\=',      loose: '[^>]',  sep: '\s*'},
     {name: 'message',   precise: '.*',                   loose: '.',     sep: ''}
 ]
+
+# Keys are strings parsed from the line with more than the above regex
+# Then they is searched as it were part of the Value field
+const s_schema_aliases = {
+    'u_element_name': 'element',
+}
 
 
 ###################################################
@@ -239,7 +246,9 @@ export def FilterField(field: string)
         return
     endif
 
-    const regex = SeekFieldBuildRegex(field, value, true)
+    # Look up the correct regex schema field using the alias map (defaults to itself)
+    const schema_field = get(s_schema_aliases, field, field)
+    const regex = SeekFieldBuildRegex(schema_field, value, true)
     execute $":%!grep -P '{regex}'"
 
     # Search fails if match found at first line

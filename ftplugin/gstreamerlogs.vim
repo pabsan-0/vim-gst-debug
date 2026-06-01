@@ -25,9 +25,15 @@ OnLoad()
 command! GstDebugParseLine gst_debug#ParseLineDebug()
 command! GstDebugSeekLine  gst_debug#SeekFieldDebug()
 
-command! FilterElement  gst_debug#FilterField("u_element_name")
-command! FilterLevel    gst_debug#FilterField("level")
-command! FilterThread   gst_debug#FilterField("thread")
+# Basic field filtering
+command! FilterPID         gst_debug#FilterField("pid")
+command! FilterThread      gst_debug#FilterField("thread")
+command! FilterLevel       gst_debug#FilterField("level")
+command! FilterCategory    gst_debug#FilterField("category")
+command! FilterSource      gst_debug#FilterField("source")
+command! FilterElement     gst_debug#FilterField("element")
+command! FilterElementName gst_debug#FilterField("u_element_name")
+
 
 # Faster saving for large files: :w is now :noautocmd w
 cnoreabbrev <expr> <buffer> w (getcmdtype() == ':' && getcmdline() == 'w') ? 'noautocmd w' : 'w'
