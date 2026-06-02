@@ -295,3 +295,186 @@ export def FTypeDetectGstreamerlogs()
         FTypeSetGstreamerlogs()
     endif
 enddef
+
+###################################################
+##  Rg search
+###################################################
+
+var s_rg_matches: list<list<number>> = []
+var s_rg_index: number = -1
+var s_rg_pattern: string = ''
+var s_rg_job: job = null_job
+var s_cmdline_pattern: string = ''
+
+def VimToPcre(pattern: string): string
+    var pcre = pattern
+    pcre = substitute(pcre, '\V\\+', '+', 'g')
+    pcre = substitute(pcre, '\V\\|', '|', 'g')
+    pcre = substitute(pcre, '\V\\(', '(', 'g')
+    pcre = substitute(pcre, '\V\\)', ')', 'g')
+    pcre = substitute(pcre, '\V\\x', '[0-9a-fA-F]', 'g')
+    pcre = substitute(pcre, '\V\\<', '\b', 'g')
+    pcre = substitute(pcre, '\V\\>', '\b', 'g')
+    return pcre
+enddef
+
+def ParseVimgrepLine(line_str: string): list<number>
+    const parts = split(line_str, ':')
+    if len(parts) < 3
+        return []
+    endif
+
+    const lnum = str2nr(parts[-3])
+    const col = str2nr(parts[-2])
+    if lnum <= 0 || col <= 0
+        return []
+    endif
+
+    return [lnum, col]
+enddef
+
+def FindFirstAfter(matches: list<list<number>>, cur_lnum: number, cur_col: number): number
+    for i in range(len(matches))
+        const [lnum, col] = matches[i]
+        if lnum > cur_lnum || (lnum == cur_lnum && col > cur_col)
+            return i
+        endif
+    endfor
+    return len(matches) > 0 ? 0 : -1
+enddef
+
+def JumpToIndex(index: number)
+    if index < 0 || index >= len(s_rg_matches)
+        return
+    endif
+
+    const [lnum, col] = s_rg_matches[index]
+    cursor(lnum, col)
+enddef
+
+export def CmdlineChanged()
+    s_cmdline_pattern = getcmdline()
+enddef
+
+def StopRgJob()
+    if s_rg_job != null_job && job_status(s_rg_job) ==# 'run'
+        job_stop(s_rg_job)
+    endif
+    s_rg_job = null_job
+enddef
+
+export def RgTriggerAsync(pattern: string)
+    StopRgJob()
+
+    const rg_pattern = VimToPcre(pattern)
+    const cur_lnum = line('.')
+    const cur_col = col('.')
+    const file_path = expand('%:p')
+    var acc: list<string> = []
+
+    s_rg_job = job_start(['rg', '--vimgrep', '--pcre2', '--no-messages', '-e', rg_pattern, file_path], {
+        out_mode: 'nl',
+        out_cb: (_, msg) => add(acc, msg),
+        err_mode: 'nl',
+        err_cb: (_, __) => {},
+        exit_cb: (_, code) => RgJobDone(copy(acc), cur_lnum, cur_col, code),
+    })
+enddef
+
+def RgJobDone(raw: list<string>, cur_lnum: number, cur_col: number, code: number)
+    s_rg_job = null_job
+    if code != 0
+        s_rg_matches = []
+        s_rg_index = -1
+        return
+    endif
+
+    var matches: list<list<number>> = []
+    for entry in raw
+        const parsed = ParseVimgrepLine(entry)
+        if !empty(parsed)
+            add(matches, parsed)
+        endif
+    endfor
+
+    if empty(matches)
+        s_rg_matches = []
+        s_rg_index = -1
+        return
+    endif
+
+    s_rg_matches = matches
+    s_rg_index = FindFirstAfter(s_rg_matches, cur_lnum, cur_col)
+    echom $'rg: {len(s_rg_matches)} matches [{s_rg_index + 1}/{len(s_rg_matches)}]'
+enddef
+
+export def RgInterceptCR()
+    const pattern = s_cmdline_pattern
+    if pattern == ''
+        return
+    endif
+
+    s_rg_pattern = pattern
+    s_rg_matches = []
+    s_rg_index = -1
+    @/ = pattern
+    set hlsearch
+    RgTriggerAsync(pattern)
+
+    const rg_pattern = VimToPcre(pattern)
+    const cur_lnum = line('.')
+    const cur_col = col('.')
+    const file_path = expand('%:p')
+    const raw = systemlist(['rg', '--vimgrep', '--pcre2', '--no-messages', '-e', rg_pattern, file_path])
+    if v:shell_error != 0
+        echo "Pattern not found"
+        return
+    endif
+
+    var matches: list<list<number>> = []
+    for entry in raw
+        const parsed = ParseVimgrepLine(entry)
+        if !empty(parsed)
+            add(matches, parsed)
+        endif
+    endfor
+
+    const first_idx = FindFirstAfter(matches, cur_lnum, cur_col)
+    if first_idx < 0
+        echo "Pattern not found"
+        return
+    endif
+
+    const [lnum, col] = matches[first_idx]
+    cursor(lnum, col)
+enddef
+
+export def RgNext()
+    if empty(s_rg_matches) || @/ !=# s_rg_pattern
+        normal! n
+        return
+    endif
+
+    s_rg_index = (s_rg_index + 1) % len(s_rg_matches)
+    JumpToIndex(s_rg_index)
+enddef
+
+export def RgPrev()
+    if empty(s_rg_matches) || @/ !=# s_rg_pattern
+        normal! N
+        return
+    endif
+
+    s_rg_index = (s_rg_index - 1 + len(s_rg_matches)) % len(s_rg_matches)
+    JumpToIndex(s_rg_index)
+enddef
+
+export def RgWord()
+    const word = expand('<cword>')
+    if word == ''
+        return
+    endif
+
+    s_cmdline_pattern = '\<' .. escape(word, '\') .. '\>'
+    RgInterceptCR()
+enddef

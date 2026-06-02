@@ -6,6 +6,9 @@ def OnLoad()
     setlocal noundofile
     setlocal foldmethod=manual
     setlocal nofoldenable
+    if &redrawtime > 250
+        &redrawtime = 250
+    endif
 
     # Disable copilot on the current buffer
     # Proven to slow writing a LOT
@@ -17,6 +20,17 @@ def OnLoad()
 
     # Apply indentation if file is small, else message
     # silent! normal gg=G
+
+    const abuf = bufnr('%')
+    augroup GstDebugRgSearch
+        execute $'autocmd! * <buffer={abuf}>'
+        execute $'autocmd CmdlineChanged <buffer={abuf}> if getcmdtype() ==# "/" | gst_debug#CmdlineChanged() | endif'
+    augroup END
+
+    nnoremap <silent> <buffer> n <ScriptCmd>gst_debug#RgNext()<CR>
+    nnoremap <silent> <buffer> N <ScriptCmd>gst_debug#RgPrev()<CR>
+    nnoremap <silent> <buffer> * <ScriptCmd>gst_debug#RgWord()<CR>
+    cnoremap <expr> <buffer> <CR> getcmdtype() ==# '/' ? "\<C-c>\<ScriptCmd>gst_debug#RgInterceptCR()\<CR>" : "\<CR>"
 enddef
 OnLoad()
 
