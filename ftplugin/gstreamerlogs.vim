@@ -1,31 +1,21 @@
 vim9script
 
-def OnLoad()
-    # Misc optimizations targeting large files
-    setlocal noswapfile
-    setlocal noundofile
-    setlocal foldmethod=manual
-    setlocal nofoldenable
+# Line wrapping
+setlocal wrap
+setlocal breakindent
+setlocal breakindentopt=shift:4
 
-    # Disable copilot on the current buffer
-    # Proven to slow writing a LOT
-    b:copilot_enabled = 0
+setlocal noswapfile
+setlocal noundofile
+setlocal foldmethod=manual
+setlocal nofoldenable
+if &redrawtime > 250
+    &redrawtime = 250
+endif
 
-    # Load ft-related plugin files
-    runtime! indent/gstreamerlogs.vim
-    runtime! syntax/gstreamerlogs.vim
-
-    # Apply indentation if file is small, else message
-    # silent! normal gg=G
-enddef
-OnLoad()
-
-
-# FIXME find better names!
-command! GstDebugParseLine gst_debug#ParseLineDebug()
-command! GstDebugSeekLine  gst_debug#SeekFieldDebug()
 
 # Basic field filtering
+# FIXME default to current line's, but allow argument
 command! FilterPID         gst_debug#FilterField("pid")
 command! FilterThread      gst_debug#FilterField("thread")
 command! FilterLevel       gst_debug#FilterField("level")
@@ -41,4 +31,13 @@ cnoreabbrev <expr> <buffer> w (getcmdtype() == ':' && getcmdline() == 'w') ? 'no
 # User UX
 # nnoremap ]l
 # nnoremap [l
-# nnoremap <leader>l
+# nnoremap <leader>ll  # level lower than
+# nnoremap <leader>lh  # level higher than
+# nnoremap <leader>le  # level equal to
+# nnoremap <C-n>
+# nnoremap <C-p>
+
+
+# Disable copilot on the current buffer
+# Proven to slow writing a LOT
+b:copilot_enabled = 0
