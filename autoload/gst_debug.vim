@@ -30,7 +30,8 @@ const s_schema = [
 # Derived schema: Expressions and combinations.
 const s_derived_schema = {
     _levelnum: { parent: 'level', expr: (ctx) => s_level_map[ctx.level] },
-    _fileline: { parent: 'file',  expr: (ctx) => ctx.file .. ':' .. ctx.lineno }
+    _fileline: { parent: 'file',  expr: (ctx) => ctx.file .. ':' .. ctx.lineno },
+    _findexpr: { parent: 'file',  expr: (ctx) => ctx.timestamp .. '\s+' .. ctx.pid .. '\s+' .. ctx.thread}
 }
 
 # Yields a list of regexes to parse a line.
@@ -72,78 +73,100 @@ const s_regex_chain: list<string> = BuildRegexChain()
 ##  Parsing anf seeking
 ###################################################
 
-def ParseLine(a_lnum: number = -1): dict<any>
+def ParseLine(a_lnum: number = -1): list<any>
     const target_lnum = a_lnum == -1 ? line('.') : a_lnum
 
-    var result: dict<any> = {}
-    var text_to_parse = getline(target_lnum)
-    var schema_field_idx = 0
+    # Outcomes
+    var fields: dict<any> = {}
+    var locs: dict<any> = {}
+
+    # Helpers
+    const original_line = getline(target_lnum)
+    var to_parse = original_line
+    var field_idx = 0
+    var offset = 0
 
     # Base schema extraction
     for regex in s_regex_chain
-        var matches = matchlist(text_to_parse, regex)
+        var matches = matchlist(to_parse, regex)
         if empty(matches)
-            return {}
+            return [fields, locs, target_lnum]
         endif
 
-        var remaining_fields = min([8, len(s_schema) - schema_field_idx])
+        var remaining_fields = min([8, len(s_schema) - field_idx])
         for i in range(remaining_fields)
-            var field_def = s_schema[schema_field_idx]
+            var field_name = s_schema[field_idx].name
             var val = matches[i + 1]
-            result[field_def.name] = val
-            schema_field_idx += 1
+
+            # Store the field value
+            fields[field_name] = val
+
+            # And its location if not null
+            if val != ''
+                var match_idx = stridx(original_line, val, offset)
+                if match_idx >= 0
+                    locs[field_name] = {line: target_lnum, col: match_idx + 1}
+                    offset = match_idx + len(val)
+                endif
+            endif
+            field_idx += 1
         endfor
 
-        if len(s_regex_chain) > 1 && schema_field_idx < len(s_schema)
-            text_to_parse = matches[9]
+        if len(s_regex_chain) > 1 && field_idx < len(s_schema)
+            to_parse = matches[9]
         endif
     endfor
 
     # Derived Extraction
     for [new_field, rule] in items(s_derived_schema)
-        result[new_field] = rule.expr(result)
+        fields[new_field] = rule.expr(fields)
+        if has_key(locs, rule.parent)
+            locs[new_field] = copy(locs[rule.parent])
+        endif
     endfor
 
-    return result
+    return [fields, locs, target_lnum]
 enddef
 
 
 def ParseMultiLine(a_lnum: number = -1): list<any>
     const lnum_scan_start = a_lnum == -1 ? line('.') : a_lnum
 
-    var result = {}
-    var lnum = -1
+    var fields: dict<any> = {}
+    var locs: dict<any> = {}
+    var line_log_start: number = -1
 
-    # Upward scan: aims to find a matching log line
-    for offset in range(g:gst_debug_multiline_scan_len)
-        lnum = lnum_scan_start - offset
+    # Upward scan: aims to find a schema-matching log line
+    for line_offset in range(g:gst_debug_multiline_scan_len)
+        var lnum = lnum_scan_start - line_offset
         if lnum <= 0
             break
         endif
 
-        result = ParseLine(lnum)
-        if !empty(result)
+        [fields, locs, line_log_start] = ParseLine(lnum)
+        if !empty(fields) && !empty(locs)
             break
         endif
     endfor
 
-    # Downward scan: if a parent log line was found, append further lines to
-    # last field until a new log line starts
-    if !empty(result)
-        var next_lnum = lnum + 1
-        var eof_lnum = line('$')
+    # Downward scan: if log line was found, append further lines to last field
+    const eof_lnum = line('$')
+    const last_field_name = s_schema[-1].name
+    if !empty(fields)
+        for line_offset in range(g:gst_debug_multiline_scan_len)
+            var lnum = line_log_start + line_offset + 1
 
-        for i in range(g:gst_debug_multiline_scan_len)
-            if next_lnum > eof_lnum || !empty(ParseLine(next_lnum))
-                break # We hit EOF / next log message, stop gathering
+            if !empty(ParseLine(lnum)[0]) || lnum > eof_lnum
+                break
             endif
-            result[s_schema[-1].name] ..= "\n" .. getline(next_lnum)
-            next_lnum += 1
+
+            fields[last_field_name] ..= "\n" .. getline(lnum)
         endfor
     endif
 
-    return [result, lnum]
+    return [fields, locs, line_log_start]
 enddef
+
 
 def SeekFieldBuildRegex(target_field: string, target_value: string, inverse: bool = false): string
     var field_found = false
@@ -186,16 +209,16 @@ endif
 export def CursorToField(fieldname: string, visual_select: bool = false)
     var lnum_scan_start = line('.')
 
-    var [log_data, log_lnum] = ParseMultiLine(lnum_scan_start)
-    if empty(log_data)
+    var [fields, locs, lnum] = ParseMultiLine(lnum_scan_start)
+    if empty(fields)
         return
     endif
 
-    var original_line = getline(log_lnum)
+    var original_line = getline(lnum)
     var current_offset = 0
 
     for field in s_schema
-        var val = get(log_data, field.name, '')
+        var val = get(fields, field.name, '')
         if empty(val)
             continue
         endif
@@ -210,16 +233,16 @@ export def CursorToField(fieldname: string, visual_select: bool = false)
 
                 if visual_select
                     execute "normal! \<Esc>"
-                    cursor(log_lnum, match_idx + 1)
+                    cursor(lnum, match_idx + 1)
                     execute "normal! v"
                     if len(val_lines) > 1
                         var end_col = max([1, len(val_lines[-1])])
-                        cursor(log_lnum + len(val_lines) - 1, end_col)
+                        cursor(lnum + len(val_lines) - 1, end_col)
                     else
-                        cursor(log_lnum, match_idx + len(first_line_val))
+                        cursor(lnum, match_idx + len(first_line_val))
                     endif
                 else
-                    cursor(log_lnum, match_idx + 1)
+                    cursor(lnum, match_idx + 1)
                 endif
                 return
             endif
@@ -257,8 +280,8 @@ def GetFieldUnderCursor(): list<string>
     var current_lnum = cur_pos[1]
     var current_col = cur_pos[2]
 
-    var [line_data, matched_lnum] = ParseMultiLine(current_lnum)
-    if empty(line_data)
+    var [fields, locs, lnum] = ParseMultiLine(current_lnum)
+    if empty(fields)
         return ['', '']
     endif
 
@@ -266,17 +289,17 @@ def GetFieldUnderCursor(): list<string>
     var target_value = ''
 
     # If cursor is on a continuation line of a multiline block
-    if current_lnum > matched_lnum
+    if current_lnum > lnum
         target_field = s_schema[-1].name
-        target_value = get(line_data, target_field, '')
+        target_value = get(fields, target_field, '')
     else
-        var original_line = getline(matched_lnum)
+        var original_line = getline(lnum)
         var current_offset = 0
         var prev_field = ''
         var prev_val = ''
 
         for field in s_schema
-            var val = get(line_data, field.name, '')
+            var val = get(fields, field.name, '')
             if empty(val) | continue | endif
 
             var first_line_val = split(val, '\n', true)[0]
@@ -444,7 +467,7 @@ enddef
 
 export def FilterField(field: string, inverse: bool = false)
     const cur_pos = getcurpos()
-    const obj = ParseLine(cur_pos[1])
+    const [obj, __, __] = ParseMultiLine(cur_pos[1])
     const value = get(obj, field, '')
 
     if value == ''
