@@ -196,150 +196,74 @@ def SeekFieldBuildRegex(target_field: string, target_value: string, inverse: boo
     return regex
 enddef
 
-if g:gst_debug_debug == true
-    command! DebugParseLine           echom ParseLine(-1)
-    command! DebugParseMultiLine      echom ParseMultiLine(-1)
-    command! DebugSeekFieldBuildRegex echom SeekFieldBuildRegex("category", "GST_INIT", 0)
-endif
 
 ###################################################
 ## Navigation - Horizontal
 ###################################################
 
-export def CursorToField(fieldname: string, visual_select: bool = false)
-    var lnum_scan_start = line('.')
+def GetFieldUnderCursor(): list<string>
+    const [fields, locs, lnum] = ParseMultiLine(line('.'))
+    if empty(fields) | return ['', ''] | endif
 
-    var [fields, locs, lnum] = ParseMultiLine(lnum_scan_start)
-    if empty(fields)
+    var fieldname = ''
+    var fieldvalue = ''
+
+    # Continuation line of a multiline block
+    if line('.') > lnum
+        fieldname = s_schema[-1].name
+        fieldvalue = get(fields, fieldname, '')
+    else
+        for fieldschema in s_schema
+            if has_key(locs, fieldschema.name) && locs[fieldschema.name].col <= col('.')
+                fieldname = fieldschema.name
+                fieldvalue = get(fields, fieldname, '')
+            else
+                break
+            endif
+        endfor
+    endif
+
+    return [fieldname, fieldvalue]
+enddef
+
+
+export def CursorToField(fieldname: string, do_visual_select: bool = false)
+    var [fields, locs, lnum] = ParseMultiLine(line('.'))
+    if empty(fields) || !has_key(locs, fieldname)
         return
     endif
 
-    var original_line = getline(lnum)
-    var current_offset = 0
-
-    for field in s_schema
-        var val = get(fields, field.name, '')
-        if empty(val)
-            continue
-        endif
-
-        var val_lines = split(val, '\n', true)
-        var first_line_val = val_lines[0]
-
-        var match_idx = stridx(original_line, first_line_val, current_offset)
-        if match_idx >= 0
-            if field.name == fieldname
-                execute "normal! m`"
-
-                if visual_select
-                    execute "normal! \<Esc>"
-                    cursor(lnum, match_idx + 1)
-                    execute "normal! v"
-                    if len(val_lines) > 1
-                        var end_col = max([1, len(val_lines[-1])])
-                        cursor(lnum + len(val_lines) - 1, end_col)
-                    else
-                        cursor(lnum, match_idx + len(first_line_val))
-                    endif
-                else
-                    cursor(lnum, match_idx + 1)
-                endif
-                return
-            endif
-            current_offset = match_idx + len(first_line_val)
-        endif
-    endfor
+    execute "normal! m`"
+    cursor(locs[fieldname].line, locs[fieldname].col)
 enddef
 
-nnoremap g1 <Cmd>call gst_debug#CursorToField('timestamp')<CR>
-nnoremap g2 <Cmd>call gst_debug#CursorToField('pid')<CR>
-nnoremap g3 <Cmd>call gst_debug#CursorToField('thread')<CR>
-nnoremap g4 <Cmd>call gst_debug#CursorToField('level')<CR>
-nnoremap g5 <Cmd>call gst_debug#CursorToField('category')<CR>
-nnoremap g6 <Cmd>call gst_debug#CursorToField('file')<CR>
-nnoremap g7 <Cmd>call gst_debug#CursorToField('lineno')<CR>
-nnoremap g8 <Cmd>call gst_debug#CursorToField('function')<CR>
-nnoremap g9 <Cmd>call gst_debug#CursorToField('element')<CR>
-nnoremap g0 <Cmd>call gst_debug#CursorToField('message')<CR>
 
-xnoremap g1 <Cmd>call gst_debug#CursorToField('timestamp', 1)<CR>
-xnoremap g2 <Cmd>call gst_debug#CursorToField('pid',       1)<CR>
-xnoremap g3 <Cmd>call gst_debug#CursorToField('thread',    1)<CR>
-xnoremap g4 <Cmd>call gst_debug#CursorToField('level',     1)<CR>
-xnoremap g5 <Cmd>call gst_debug#CursorToField('category',  1)<CR>
-xnoremap g6 <Cmd>call gst_debug#CursorToField('file',      1)<CR>
-xnoremap g7 <Cmd>call gst_debug#CursorToField('lineno',    1)<CR>
-xnoremap g8 <Cmd>call gst_debug#CursorToField('function',  1)<CR>
-xnoremap g9 <Cmd>call gst_debug#CursorToField('element',   1)<CR>
-xnoremap g0 <Cmd>call gst_debug#CursorToField('message',   1)<CR>
-
-
-# FIXME merge with similar functions
-def GetFieldUnderCursor(): list<string>
-    var cur_pos = getcurpos()
-    var current_lnum = cur_pos[1]
-    var current_col = cur_pos[2]
-
-    var [fields, locs, lnum] = ParseMultiLine(current_lnum)
-    if empty(fields)
-        return ['', '']
+export def CursorToFieldVisual(fieldname: string)
+    var [fields, locs, lnum] = ParseMultiLine(line('.'))
+    if empty(fields) || !has_key(locs, fieldname)
+        return
     endif
+    execute "normal! m`"
 
-    var target_field = ''
-    var target_value = ''
+    var end_line = -1
+    var end_col  = -1
 
-    # If cursor is on a continuation line of a multiline block
-    if current_lnum > lnum
-        target_field = s_schema[-1].name
-        target_value = get(fields, target_field, '')
+    var val_lines = split(fields[fieldname], '\n', true)
+    if len(val_lines) > 1
+        end_line = locs[fieldname].line + len(val_lines) - 1
+        end_col  = max([1, len(val_lines[-1])])
     else
-        var original_line = getline(lnum)
-        var current_offset = 0
-        var prev_field = ''
-        var prev_val = ''
-
-        for field in s_schema
-            var val = get(fields, field.name, '')
-            if empty(val) | continue | endif
-
-            var first_line_val = split(val, '\n', true)[0]
-            var match_idx = stridx(original_line, first_line_val, current_offset)
-
-            if match_idx >= 0
-                var start_col = match_idx + 1
-                var end_col = start_col + len(first_line_val) - 1
-
-                # Belongs to previous field's trailing space
-                if current_col < start_col && prev_field != ''
-                    target_field = prev_field
-                    target_value = prev_val
-                    break
-                endif
-
-                # Physically inside this field
-                if current_col >= start_col && current_col <= end_col
-                    target_field = field.name
-                    target_value = val
-                    break
-                endif
-
-                prev_field = field.name
-                prev_val = val
-                current_offset = match_idx + len(first_line_val)
-            endif
-        endfor
-
-        # Fallback to the last extracted field
-        if empty(target_field) && prev_field != ''
-            target_field = prev_field
-            target_value = prev_val
-        endif
+        end_line = locs[fieldname].line
+        end_col  = locs[fieldname].col + len(fields[fieldname]) - 1
     endif
 
-    return [target_field, target_value]
+    cursor(locs[fieldname].line, locs[fieldname].col)
+    execute "normal! \<Esc>v"
+    cursor(end_line, end_col)
 enddef
 
-export def CursorToNext(backwards: bool = v:false, inverse: bool = v:false)
+
+def CursorToNext(backwards: bool = v:false, inverse: bool = v:false)
     var [target_field, target_value] = GetFieldUnderCursor()
 
     if empty(target_field)
@@ -372,10 +296,19 @@ export def CursorToNext(backwards: bool = v:false, inverse: bool = v:false)
     endif
 enddef
 
-nnoremap <C-n>  <Cmd>call gst_debug#CursorToNext(v:false)        <CR>
-nnoremap <C-p>  <Cmd>call gst_debug#CursorToNext(v:true)         <CR>
-nnoremap g<C-n> <Cmd>call gst_debug#CursorToNext(v:false, v:true)<CR>
-nnoremap g<C-p> <Cmd>call gst_debug#CursorToNext(v:true,  v:true)<CR>
+export def CursorToNextMatch()
+    CursorToNext(v:false, v:false)
+enddef
+export def CursorToNextNoMatch()
+    CursorToNext(v:false, v:true)
+enddef
+export def CursorToPrevMatch()
+    CursorToNext(v:true,  v:false)
+enddef
+export def CursorToPrevNoMatch()
+    CursorToNext(v:true,  v:true)
+enddef
+
 
 def NextElement()
 enddef
