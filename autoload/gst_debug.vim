@@ -9,22 +9,22 @@ g:gst_debug_debug = true
 g:gst_debug_multiline_scan_len = 50
 
 const s_level_map = {
-      \ 'none': 0, 'ERROR': 1, 'WARNING': 2, 'FIXME': 3,
+      \ 'none': 0, 'ERROR': 1, 'WARN': 2, 'FIXME': 3,
       \ 'INFO': 4, 'DEBUG': 5, 'LOG': 6, 'TRACE': 7, 'MEMDUMP': 9,
       \ }
 
 # Flat schema: Every physical token in the log is a primary column.
 const s_schema = [
-    {name: 'timestamp', parser: '\d\+:\d\+:\d\+\.\d\+', searcher: '\S',    sep: '\s\+', },
-    {name: 'pid',       parser: '\d\+',                 searcher: '\d',    sep: '\s\+', },
-    {name: 'thread',    parser: '0x\x\+',               searcher: '\S',    sep: '\s\+', },
-    {name: 'level',     parser: '[A-Z]\+',              searcher: '[A-Z]', sep: '\s\+', },
-    {name: 'category',  parser: '\S\+',                 searcher: '\S',    sep: '\s\+', },
-    {name: 'file',      parser: '[^:]\+',               searcher: '[^:]',  sep: ':',    },
-    {name: 'lineno',    parser: '\d\+',                 searcher: '\d',    sep: ':',    },
-    {name: 'function',  parser: '[^:]\+',               searcher: '[^:]',  sep: ':',    },
-    {name: 'element',   parser: '\%(<[^>]\+>\)\=',      searcher: '[^>]',  sep: '\s*',  },
-    {name: 'message',   parser: '.*',                   searcher: '.',     sep: '',     }
+    {name: 'timestamp', parser: '\d\+:\d\+:\d\+\.\d\+', sep: '\s\+', },
+    {name: 'pid',       parser: '\d\+',                 sep: '\s\+', },
+    {name: 'thread',    parser: '0x\x\+',               sep: '\s\+', },
+    {name: 'level',     parser: '[A-Z]\+',              sep: '\s\+', },
+    {name: 'category',  parser: '\S\+',                 sep: '\s\+', },
+    {name: 'file',      parser: '[^:]\+',               sep: ':',    },
+    {name: 'lineno',    parser: '\d\+',                 sep: ':',    },
+    {name: 'function',  parser: '[^:]\+',               sep: ':',    },
+    {name: 'element',   parser: '\%(<[^>]\+>\)\=',      sep: '\s*',  },
+    {name: 'message',   parser: '.*',                   sep: '',     }
 ]
 
 # Derived schema: Expressions and combinations.
@@ -72,7 +72,7 @@ const s_regex_chain: list<string> = BuildRegexChain()
 ##  Parsing anf seeking
 ###################################################
 
-def ParseLine(a_lnum: number = -1, debug: bool = false): dict<any>
+def ParseLine(a_lnum: number = -1): dict<any>
     const target_lnum = a_lnum == -1 ? line('.') : a_lnum
 
     var result: dict<any> = {}
@@ -104,14 +104,11 @@ def ParseLine(a_lnum: number = -1, debug: bool = false): dict<any>
         result[new_field] = rule.expr(result)
     endfor
 
-    if debug
-        echom result
-    endif
     return result
 enddef
 
 
-def ParseMultiLine(a_lnum: number = -1, debug: bool = false): list<any>
+def ParseMultiLine(a_lnum: number = -1): list<any>
     const lnum_scan_start = a_lnum == -1 ? line('.') : a_lnum
 
     var result = {}
@@ -145,47 +142,26 @@ def ParseMultiLine(a_lnum: number = -1, debug: bool = false): list<any>
         endfor
     endif
 
-    if debug
-        echom [result, lnum]
-    endif
     return [result, lnum]
 enddef
 
-if g:gst_debug_debug == true
-    command! DebugParseLine      ParseLine(-1, true)
-    command! DebugParseMultiLine ParseMultiLine(-1, true)
-endif
-
-###################################################
-##  Regex Generation (Ripgrep)
-###################################################
-
-# FIXME tests pending, will be used for filtering
-def SeekFieldBuildRegex(target_field: string, target_value: string, is_pcre: bool = false): string
-    var parent_field = target_field
-
-    # Map derived fields back to their physical column for regex placement
-    if has_key(s_derived_schema, target_field)
-        parent_field = s_derived_schema[target_field].parent
-    endif
-
-    var regex = '^'
+def SeekFieldBuildRegex(target_field: string, target_value: string, inverse: bool = false): string
     var field_found = false
-    var star = '*'
+    var regex = '^'
 
     for field in s_schema
-        # The only thing we still need to translate for PCRE is Vim's \+ in separators
-        var f_sep = is_pcre ? substitute(field.sep, '\V\\+', '+', 'g') : field.sep
-
-        if field.name == parent_field
+        if field.name == target_field
             field_found = true
-            var safe_value = escape(target_value, '.\*$^~[]')
+            var target_value_safe = escape(target_value, '.\*$^~[]')
 
-            var loose_char = has_key(s_derived_schema, target_field) ? '.' : field.searcher
-            regex ..= loose_char .. star .. safe_value .. loose_char .. star .. f_sep
+            if inverse
+                regex ..= '\%(' .. target_value_safe .. '\)\@!' .. field.parser
+            else
+                regex ..= target_value_safe
+            endif
+            break
         else
-            # We just use the searcher character class and '*' to skip the column entirely!
-            regex ..= field.searcher .. star .. f_sep
+            regex ..= field.parser .. field.sep
         endif
     endfor
 
@@ -197,6 +173,11 @@ def SeekFieldBuildRegex(target_field: string, target_value: string, is_pcre: boo
     return regex
 enddef
 
+if g:gst_debug_debug == true
+    command! DebugParseLine           echom ParseLine(-1)
+    command! DebugParseMultiLine      echom ParseMultiLine(-1)
+    command! DebugSeekFieldBuildRegex echom SeekFieldBuildRegex("category", "GST_INIT", 0)
+endif
 
 ###################################################
 ## Navigation - Horizontal
@@ -270,7 +251,108 @@ xnoremap g9 <Cmd>call gst_debug#CursorToField('element',   1)<CR>
 xnoremap g0 <Cmd>call gst_debug#CursorToField('message',   1)<CR>
 
 
-# UX: ^N ^P read current field and do next/prev
+# FIXME merge with similar functions
+def GetFieldUnderCursor(): list<string>
+    var cur_pos = getcurpos()
+    var current_lnum = cur_pos[1]
+    var current_col = cur_pos[2]
+
+    var [line_data, matched_lnum] = ParseMultiLine(current_lnum)
+    if empty(line_data)
+        return ['', '']
+    endif
+
+    var target_field = ''
+    var target_value = ''
+
+    # If cursor is on a continuation line of a multiline block
+    if current_lnum > matched_lnum
+        target_field = s_schema[-1].name
+        target_value = get(line_data, target_field, '')
+    else
+        var original_line = getline(matched_lnum)
+        var current_offset = 0
+        var prev_field = ''
+        var prev_val = ''
+
+        for field in s_schema
+            var val = get(line_data, field.name, '')
+            if empty(val) | continue | endif
+
+            var first_line_val = split(val, '\n', true)[0]
+            var match_idx = stridx(original_line, first_line_val, current_offset)
+
+            if match_idx >= 0
+                var start_col = match_idx + 1
+                var end_col = start_col + len(first_line_val) - 1
+
+                # Belongs to previous field's trailing space
+                if current_col < start_col && prev_field != ''
+                    target_field = prev_field
+                    target_value = prev_val
+                    break
+                endif
+
+                # Physically inside this field
+                if current_col >= start_col && current_col <= end_col
+                    target_field = field.name
+                    target_value = val
+                    break
+                endif
+
+                prev_field = field.name
+                prev_val = val
+                current_offset = match_idx + len(first_line_val)
+            endif
+        endfor
+
+        # Fallback to the last extracted field
+        if empty(target_field) && prev_field != ''
+            target_field = prev_field
+            target_value = prev_val
+        endif
+    endif
+
+    return [target_field, target_value]
+enddef
+
+export def CursorToNext(backwards: bool = v:false, inverse: bool = v:false)
+    var [target_field, target_value] = GetFieldUnderCursor()
+
+    if empty(target_field)
+        echom "Could not identify field under cursor."
+        return
+    endif
+
+    var search_value = split(target_value, '\n', true)[0]
+    var regex = SeekFieldBuildRegex(target_field, search_value, inverse)
+    if empty(regex)
+        return
+    endif
+
+    var original_pos = getpos('.')
+    var original_search = @/
+
+    execute "normal! m`"
+    if backwards
+        execute "normal 0"
+    endif
+
+    var search_flags = backwards ? 'bW' : 'W'
+    var found_lnum = search(regex, search_flags)
+    @/ = original_search
+
+    if found_lnum > 0
+        CursorToField(target_field)
+    else
+        setpos('.', original_pos)
+    endif
+enddef
+
+nnoremap <C-n>  <Cmd>call gst_debug#CursorToNext(v:false)        <CR>
+nnoremap <C-p>  <Cmd>call gst_debug#CursorToNext(v:true)         <CR>
+nnoremap g<C-n> <Cmd>call gst_debug#CursorToNext(v:false, v:true)<CR>
+nnoremap g<C-p> <Cmd>call gst_debug#CursorToNext(v:true,  v:true)<CR>
 
 def NextElement()
 enddef
@@ -349,28 +431,39 @@ def FilterVisual()
     # Arbitrary grep from visual selection
 enddef
 
-export def FilterField(field: string)
-    const [buffr, line, column; __] = getcurpos()
-    const obj = ParseLine(line)
+def VimRegexToPCRE(vim_regex: string): string
+    var pcre = vim_regex
+    pcre = substitute(pcre, '\\%(\(.\{-}\)\\)\\@!', '(?!\1)', 'g') # Negative Lookahead: \%(X\)\@! -> (?!X)
+    pcre = substitute(pcre, '\\%(', '(?:', 'g')                    # Non-capturing groups: \%(X\) -> (?:X)
+    pcre = substitute(pcre, '\\)', ')', 'g')                       # Escaped parenthesis: \) -> )
+    pcre = substitute(pcre, '\\x', '[0-9a-fA-F]', 'g')             # Hexadecimal character class: \x -> [0-9a-fA-F]
+    pcre = substitute(pcre, '\\+', '+', 'g')                       # One or more: \+ -> +
+    pcre = substitute(pcre, '\\=', '?', 'g')                       # Zero or one: \= -> ?
+    return pcre
+enddef
+
+export def FilterField(field: string, inverse: bool = false)
+    const cur_pos = getcurpos()
+    const obj = ParseLine(cur_pos[1])
     const value = get(obj, field, '')
 
     if value == ''
-        echom "Cannot parse " .. field .. " from current line"
+        echom "Cannot parse " .. field .. " field from current line. Must be in schema."
         return
     endif
 
-    # Look up the correct regex schema field using the alias map (defaults to itself)
-    const schema_field = get(s_schema_aliases, field, field)
-    const regex = SeekFieldBuildRegex(schema_field, value, true)
-    execute $":%!grep -P '{regex}'"
+    const vim_regex = SeekFieldBuildRegex(field, value, inverse)
+    const pcre_regex = VimRegexToPCRE(vim_regex)
+    execute $":%!rg -P '{pcre_regex}'"
 
-    # Search fails if match found at first line
+    # Attempt to restore cursor safely
     const old_line_pattern = '^' .. obj.timestamp .. '\s\+' .. obj.pid .. '\s\+' .. obj.thread
     cursor(1, 1)
     if !search(old_line_pattern, 'W')
-        echom "Unexpected error: Can't find original line after filtering!"
+        echom "Filter applied. Original line was filtered out."
+    else
+        cursor(0, cur_pos[2])
     endif
-    cursor(0, column)
 enddef
 
 def FilterReset()
@@ -406,4 +499,8 @@ enddef
 
 # export def LineStringJump
 #     # ripgrep based
+# enddef
+# def ListUnique(method: string)
+#     # if method in ["first", "last", "both"]
+#     # Filter by description
 # enddef
