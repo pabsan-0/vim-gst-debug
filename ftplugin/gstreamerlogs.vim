@@ -13,7 +13,7 @@ if &redrawtime > 250
     &redrawtime = 250
 endif
 
-if g:gst_debug_debug == true
+if g:gst_debug_debug == v:true
     command! DebugParseLine           echom ParseLine(-1)
     command! DebugParseMultiLine      echom ParseMultiLine(-1)
     command! DebugSeekFieldBuildRegex echom SeekFieldBuildRegex("category", "GST_INIT", 0)
@@ -41,10 +41,28 @@ xnoremap g8 <Cmd>call gst_debug#CursorToFieldVisual('function')<CR>
 xnoremap g9 <Cmd>call gst_debug#CursorToFieldVisual('element')<CR>
 xnoremap g0 <Cmd>call gst_debug#CursorToFieldVisual('message')<CR>
 
-nnoremap <C-n>  <Cmd>call gst_debug#CursorToNextMatch()<CR>
-nnoremap <C-p>  <Cmd>call gst_debug#CursorToPrevMatch()<CR>
-nnoremap g<C-n> <Cmd>call gst_debug#CursorToNextNoMatch()<CR>
-nnoremap g<C-p> <Cmd>call gst_debug#CursorToPrevNoMatch()<CR>
+nnoremap <C-n>  <Cmd>call gst_debug#SearchFieldUnderCursor(0, 0)<CR>
+nnoremap <C-p>  <Cmd>call gst_debug#SearchFieldUnderCursor(1, 0) <CR>
+nnoremap g<C-n> <Cmd>call gst_debug#SearchFieldUnderCursor(0, 1)<CR>
+nnoremap g<C-p> <Cmd>call gst_debug#SearchFieldUnderCursor(1, 1)<CR>
+
+
+for level in ['error', 'warn', 'fixme', 'info', 'debug', 'log', 'trace', 'memdump']
+    var cmd_name = toupper(level[0]) .. tolower(level[1 : ])
+
+    execute $'command! NextLevel{level} gst_debug#SearchFieldValue("level", "{toupper(level)}", 0, 0)'
+    execute $'command! PrevLevel{level} gst_debug#SearchFieldValue("level", "{toupper(level)}", 1, 0)'
+endfor
+
+
+for field in ['pid', 'thread', 'level', 'category', 'file', 'lineno', 'function', 'element']
+    var cmd_name = toupper(field[0]) .. tolower(field[1 : ])
+
+    execute $'command! -nargs=? Next{cmd_name}Same gst_debug#SearchFieldCommand("{field}", <q-args>, 0, 0)'
+    execute $'command! -nargs=? Prev{cmd_name}Same gst_debug#SearchFieldCommand("{field}", <q-args>, 1, 0)'
+    execute $'command! -nargs=? Next{cmd_name}Diff gst_debug#SearchFieldCommand("{field}", <q-args>, 0, 1)'
+    execute $'command! -nargs=? Prev{cmd_name}Diff gst_debug#SearchFieldCommand("{field}", <q-args>, 1, 1)'
+endfor
 
 # Basic field filtering
 # FIXME default to current line's, but allow argument

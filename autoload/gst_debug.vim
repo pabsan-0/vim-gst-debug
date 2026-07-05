@@ -168,7 +168,7 @@ def ParseMultiLine(a_lnum: number = -1): list<any>
 enddef
 
 
-def SeekFieldBuildRegex(target_field: string, target_value: string, inverse: bool = false): string
+def SearchFieldValueBuildRegex(target_field: string, target_value: string, inverse: bool = false): string
     var field_found = false
     var regex = '^'
 
@@ -196,6 +196,37 @@ def SeekFieldBuildRegex(target_field: string, target_value: string, inverse: boo
     return regex
 enddef
 
+
+export def SearchFieldValue(fieldname: string, value: string, backwards: bool = false, inverse: bool = false): bool
+    var regex = SearchFieldValueBuildRegex(fieldname, value, inverse)
+    echom regex
+
+    if empty(regex)
+        return false
+    endif
+
+    var original_pos = getpos('.')
+    var original_search = @/
+
+    execute "normal! m`"
+
+    # If searching backwards, jump to column 1 so we don't match the current line
+    if backwards
+        execute "normal! 0"
+    endif
+
+    var search_flags = backwards ? 'bW' : 'W'
+    var found_lnum = search(regex, search_flags)
+    @/ = original_search
+
+    if found_lnum > 0
+        CursorToField(fieldname)
+        return true
+    else
+        setpos('.', original_pos)
+        return false
+    endif
+enddef
 
 ###################################################
 ## Navigation - Horizontal
@@ -263,7 +294,11 @@ export def CursorToFieldVisual(fieldname: string)
 enddef
 
 
-def CursorToNext(backwards: bool = v:false, inverse: bool = v:false)
+###################################################
+## Navigation - Vertical
+###################################################
+
+export def SearchFieldUnderCursor(backwards: bool = false, inverse: bool = false)
     var [target_field, target_value] = GetFieldUnderCursor()
 
     if empty(target_field)
@@ -272,92 +307,31 @@ def CursorToNext(backwards: bool = v:false, inverse: bool = v:false)
     endif
 
     var search_value = split(target_value, '\n', true)[0]
-    var regex = SeekFieldBuildRegex(target_field, search_value, inverse)
-    if empty(regex)
+    SearchFieldValue(target_field, search_value, backwards, inverse)
+enddef
+
+
+export def SearchFieldFromCurrentLine(target_field: string, backwards: bool = false, inverse: bool = false)
+    const [fields, locs, line_log_start] = ParseMultiLine()
+    if empty(fields)
+        echom $"Could not identify field {target_field}"
         return
     endif
 
-    var original_pos = getpos('.')
-    var original_search = @/
+    var target_value = get(fields, target_field, '')
+    var search_value = split(target_value, '\n', true)[0]
+    SearchFieldValue(target_field, search_value, backwards, inverse)
+enddef
 
-    execute "normal! m`"
-    if backwards
-        execute "normal 0"
-    endif
 
-    var search_flags = backwards ? 'bW' : 'W'
-    var found_lnum = search(regex, search_flags)
-    @/ = original_search
-
-    if found_lnum > 0
-        CursorToField(target_field)
+export def SearchFieldCommand(target_field: string, target_value: string = "", backwards: bool = false, inverse: bool = false)
+    if target_value == ""
+        SearchFieldFromCurrentLine(target_field, backwards, inverse)
     else
-        setpos('.', original_pos)
+        SearchFieldValue(target_field, target_value, backwards, inverse)
     endif
 enddef
 
-export def CursorToNextMatch()
-    CursorToNext(v:false, v:false)
-enddef
-export def CursorToNextNoMatch()
-    CursorToNext(v:false, v:true)
-enddef
-export def CursorToPrevMatch()
-    CursorToNext(v:true,  v:false)
-enddef
-export def CursorToPrevNoMatch()
-    CursorToNext(v:true,  v:true)
-enddef
-
-
-def NextElement()
-enddef
-def NextLevel()
-enddef
-def NextThread()
-enddef
-
-def NextLevelError()
-enddef
-def NextLevelWarning()
-enddef
-def NextLevelFixme()
-enddef
-def NextLevelInfo()
-enddef
-def NextLevelDebug()
-enddef
-def NextLevelLog()
-enddef
-def NextLevelTrace()
-enddef
-def NextLevelMemdump()
-enddef
-
-
-def PrevElement()
-enddef
-def PrevLevel()
-enddef
-def PrevThread()
-enddef
-
-def PrevLevelError()
-enddef
-def PrevLevelWarning()
-enddef
-def PrevLevelFixme()
-enddef
-def PrevLevelInfo()
-enddef
-def PrevLevelDebug()
-enddef
-def PrevLevelLog()
-enddef
-def PrevLevelTrace()
-enddef
-def PrevLevelMemdump()
-enddef
 
 ###################################################
 ##  Info
@@ -398,22 +372,22 @@ def VimRegexToPCRE(vim_regex: string): string
     return pcre
 enddef
 
-export def FilterField(field: string, inverse: bool = false)
+export def FilterField(fieldname: string, inverse: bool = false)
     const cur_pos = getcurpos()
-    const [obj, __, __] = ParseMultiLine(cur_pos[1])
-    const value = get(obj, field, '')
+    const fields = ParseMultiLine(cur_pos[1])[0]
+    const value = get(fields, fieldname, '')
 
     if value == ''
-        echom "Cannot parse " .. field .. " field from current line. Must be in schema."
+        echom "Cannot parse " .. fieldname .. " field from current line. Must be in schema."
         return
     endif
 
-    const vim_regex = SeekFieldBuildRegex(field, value, inverse)
+    const vim_regex = SearchFieldValueBuildRegex(fieldname, value, inverse)
     const pcre_regex = VimRegexToPCRE(vim_regex)
     execute $":%!rg -P '{pcre_regex}'"
 
     # Attempt to restore cursor safely
-    const old_line_pattern = '^' .. obj.timestamp .. '\s\+' .. obj.pid .. '\s\+' .. obj.thread
+    const old_line_pattern = '^' .. fields.timestamp .. '\s\+' .. fields.pid .. '\s\+' .. fields.thread
     cursor(1, 1)
     if !search(old_line_pattern, 'W')
         echom "Filter applied. Original line was filtered out."
@@ -444,7 +418,7 @@ export def FTypeDetectGstreamerlogs()
     endfor
 
     if match_count >= 5
-        setlocal filetype=gstreamerlogs
+        FTypeSetGstreamerlogs()
     endif
 enddef
 
