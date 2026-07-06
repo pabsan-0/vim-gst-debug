@@ -17,4 +17,4 @@ export def FTypeSetGstreamerlogs()
     setlocal filetype=gstreamerlogs
 enddef
 
-command! GstLog call gst_debug#FTypeSetGstreamerlogs()
+command! GstLog call FTypeSetGstreamerlogs()

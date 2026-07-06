@@ -31,7 +31,7 @@ const s_schema = [
 const s_derived_schema = {
     _levelnum: { parent: 'level', expr: (ctx) => s_level_map[ctx.level] },
     _fileline: { parent: 'file',  expr: (ctx) => ctx.file .. ':' .. ctx.lineno },
-    _findexpr: { parent: 'file',  expr: (ctx) => ctx.timestamp .. '\s+' .. ctx.pid .. '\s+' .. ctx.thread}
+    _findexpr: { parent: 'file',  expr: (ctx) => "^" .. ctx.timestamp .. '\s\+' .. ctx.pid .. '\s\+' .. ctx.thread}
 }
 
 # Yields a list of regexes to parse a line.
@@ -343,6 +343,9 @@ def ListLevels()
 enddef
 def ListThreads()
 enddef
+def ListUnique()
+    # show first last both so I can press Enter
+enddef
 
 ###################################################
 ##  Filters
@@ -387,9 +390,8 @@ export def FilterField(fieldname: string, inverse: bool = false)
     execute $":%!rg -P '{pcre_regex}'"
 
     # Attempt to restore cursor safely
-    const old_line_pattern = '^' .. fields.timestamp .. '\s\+' .. fields.pid .. '\s\+' .. fields.thread
     cursor(1, 1)
-    if !search(old_line_pattern, 'W')
+    if !search(fields._findexpr, 'cw')
         echom "Filter applied. Original line was filtered out."
     else
         cursor(0, cur_pos[2])
@@ -418,19 +420,6 @@ export def FTypeDetectGstreamerlogs()
     endfor
 
     if match_count >= 5
-        FTypeSetGstreamerlogs()
+        setlocal filetype=gstreamerlogs
     endif
 enddef
-
-
-# Expect a combo of timestamp + thread + process
-# export def LineStringGet
-# enddef
-
-# export def LineStringJump
-#     # ripgrep based
-# enddef
-# def ListUnique(method: string)
-#     # if method in ["first", "last", "both"]
-#     # Filter by description
-# enddef

@@ -13,7 +13,7 @@ if &redrawtime > 250
     &redrawtime = 250
 endif
 
-if g:gst_debug_debug == v:true
+if get(g:, "gst_debug_debug", v:false) == v:true
     command! DebugParseLine           echom ParseLine(-1)
     command! DebugParseMultiLine      echom ParseMultiLine(-1)
     command! DebugSeekFieldBuildRegex echom SeekFieldBuildRegex("category", "GST_INIT", 0)
