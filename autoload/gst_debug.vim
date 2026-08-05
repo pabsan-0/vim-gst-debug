@@ -29,8 +29,8 @@ const s_schema = [
 
 # Derived schema: Expressions and combinations.
 const s_derived_schema = {
+    _source:   { parent: 'level', expr: (ctx) => $"{ctx.file}:{ctx.lineno}:{ctx.function}"},
     _levelnum: { parent: 'level', expr: (ctx) => s_level_map[ctx.level] },
-    _fileline: { parent: 'file',  expr: (ctx) => ctx.file .. ':' .. ctx.lineno },
     _findexpr: { parent: 'file',  expr: (ctx) => "^" .. ctx.timestamp .. '\s\+' .. ctx.pid .. '\s\+' .. ctx.thread}
 }
 
@@ -73,7 +73,7 @@ const s_regex_chain: list<string> = BuildRegexChain()
 ##  Parsing anf seeking
 ###################################################
 
-def ParseLine(a_lnum: number = -1): list<any>
+export def ParseLine(a_lnum: number = -1): list<any>
     const target_lnum = a_lnum == -1 ? line('.') : a_lnum
 
     # Outcomes
@@ -129,7 +129,7 @@ def ParseLine(a_lnum: number = -1): list<any>
 enddef
 
 
-def ParseMultiLine(a_lnum: number = -1): list<any>
+export def ParseMultiLine(a_lnum: number = -1): list<any>
     const lnum_scan_start = a_lnum == -1 ? line('.') : a_lnum
 
     var fields: dict<any> = {}
@@ -334,18 +334,195 @@ enddef
 
 
 ###################################################
-##  Info
+##  Lists
 ###################################################
 
-def ListElements()
+# FIXME clean up.
+# jump_type is either "first" or "last" (not enforced)
+def JumpToAppearance(jump_type: string)
+    var line_text = getline('.')
+    const target_field = b:target_field
+
+    if line_text =~ '^[-|[:space:]]\+$' || line_text =~ 'Count'
+        return
+    endif
+
+    var parts = split(line_text, '\s*|\s*')
+    if len(parts) < 4
+        return
+    endif
+
+    # Extract and trim the padding from the scratch buffer table
+    var target_val = trim(jump_type == 'first' ? parts[2] : parts[3])
+    var target_buf = get(b:, 'gst_log_bufnr', -1)
+
+    if target_buf == -1 || !bufexists(target_buf)
+        echom "Original log buffer not found or closed."
+        return
+    endif
+
+    var winid = bufwinid(target_buf)
+    if winid != -1
+        win_gotoid(winid)
+    else
+        execute 'sbuffer ' .. target_buf
+    endif
+
+    cursor(1, 1)
+
+    # \V enables "very nomagic", making all characters literal.
+    # We include the ^ anchor to ensure we only match the start of the line.
+    var search_pattern = '\V\^' .. escape(target_val, '\')
+
+    if search(search_pattern, 'cw') > 0
+        normal! zz
+        CursorToField(target_field)
+    else
+        echom "Could not find appearance: " .. target_val
+    endif
 enddef
-def ListLevels()
+
+# FIXME have awk script files as assets. Try to regularize for regex single-source-of-truth
+def ListField(target_field: string)
+    const log_bufnr = bufnr('%')
+    echom $"Scanning buffer for {target_field}s via awk..."
+
+    const awk_script =<< trim CODE
+        BEGIN {
+            num_unique = 0
+        }
+        {
+            # 1. Enforce strict log conformance.
+            # Matches: timestamp + spaces + PID + spaces + thread (0xHEX)
+            if (!match($0, /^[0-9]+:[0-9]+:[0-9]+\.[0-9]+[ \t]+[0-9]+[ \t]+0x[0-9a-fA-F]+/)) {
+                next
+            }
+
+            # Capture the exact literal prefix string for Vim to jump to later
+            jump_str = substr($0, RSTART, RLENGTH)
+
+            # Strip ANSI escape codes
+            gsub(/\x1B\\[[0-9;]*[a-zA-Z]/, "")
+
+            val = ""
+            if (target == "element") {
+                if (match($6, /<[^>]+>/)) {
+                    val = substr($6, RSTART + 1, RLENGTH - 2)
+                }
+            } else if (target == "level") {
+                val = $4
+            } else if (target == "category") {
+                val = $5
+            } else if (target == "source") {
+                split($6, a, ":")
+                val = a[1] ":" a[2] ":" a[3]
+            }
+
+            if (val != "") {
+                if (!(val in count)) {
+                    order[++num_unique] = val
+                    first_jump[val] = jump_str
+                }
+                count[val]++
+                last_jump[val] = jump_str
+            }
+        }
+        END {
+            if (num_unique == 0) {
+                print "No matching log entries found."
+                exit
+            }
+
+            # 1. Establish baseline widths using the text lengths of the headers
+            max_v = length("Value")
+            max_c = length("Count")
+            max_f = length("First Appearance")
+            max_l = length("Last Appearance")
+
+            # 2. Iterate through values to calculate true maximum column widths
+            for (i = 1; i <= num_unique; i++) {
+                v = order[i]
+                if (length(v) > max_v) max_v = length(v)
+                if (length(count[v]) > max_c) max_c = length(count[v])
+                if (length(first_jump[v]) > max_f) max_f = length(first_jump[v])
+                if (length(last_jump[v]) > max_l) max_l = length(last_jump[v])
+            }
+
+            # 3. Dynamically construct format string templates based on computed widths
+            # (Using '%%' outputs a literal '%' character into the final format template string)
+            fmt_header = sprintf("%%-%ds | %%-%ds | %%-%ds | %%-%ds\n", max_v, max_c, max_f, max_l)
+            fmt_row    = sprintf("%%-%ds | %%-%dd | %%-%ds | %%-%ds\n", max_v, max_c, max_f, max_l)
+
+            # 4. Generate a completely responsive divider line matching the widths
+            sep_v = ""; for (j = 1; j <= max_v; j++) sep_v = sep_v "-"
+            sep_c = ""; for (j = 1; j <= max_c; j++) sep_c = sep_c "-"
+            sep_f = ""; for (j = 1; j <= max_f; j++) sep_f = sep_f "-"
+            sep_l = ""; for (j = 1; j <= max_l; j++) sep_l = sep_l "-"
+            sep_line = sep_v "-+-" sep_c "-+-" sep_f "-+-" sep_l
+
+            # 5. Output the calculated table structures
+            printf fmt_header, "Value", "Count", "First Appearance", "Last Appearance"
+            print sep_line
+
+            for (i = 1; i <= num_unique; i++) {
+                v = order[i]
+                printf fmt_row, v, count[v], first_jump[v], last_jump[v]
+            }
+        }
+    CODE
+
+    const temp_awk = tempname()
+    writefile(awk_script, temp_awk)
+
+    var output: list<string>
+    const clean_target = tolower(target_field)
+
+    if !&modified && !empty(expand('%'))
+        const cmd = 'awk -v target=' .. shellescape(clean_target) .. ' -f ' .. shellescape(temp_awk) .. ' ' .. shellescape(expand('%'))
+        output = systemlist(cmd)
+    else
+        const cmd = 'awk -v target=' .. shellescape(clean_target) .. ' -f ' .. shellescape(temp_awk)
+        output = systemlist(cmd, getline(1, '$'))
+    endif
+
+    delete(temp_awk)
+
+    if v:shell_error != 0
+        echoerr "Failed to parse logs using awk."
+        return
+    endif
+
+    execute 'new'
+    setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile
+    setlocal cursorline
+
+    var title = toupper(clean_target[0]) .. clean_target[1 : ] .. 's'
+    execute 'silent! file [GStreamer ' .. title .. ']'
+
+    setline(1, output)
+
+    b:gst_log_bufnr = log_bufnr
+    b:target_field = target_field
+
+
+    syntax match TableDimmed /\.\d\+\s\+\d\+\s\+0x\x\+/
+    syntax match TableStructure /[\|]/
+    syntax match TableDivider /^-\++\+.\+$/
+    hi def link TableDimmed NonText
+    hi def link TableStructure Special
+    hi def link TableDivider Comment
+
+    nnoremap <buffer> <silent> g1 <ScriptCmd>JumpToAppearance("first")<CR>
+    nnoremap <buffer> <silent> g2 <ScriptCmd>JumpToAppearance("last")<CR>
+
+    setlocal nomodifiable
 enddef
-def ListThreads()
-enddef
-def ListUnique()
-    # show first last both so I can press Enter
-enddef
+
+
+command! ListElements   ListField('element')
+command! ListLevels     ListField('level')
+command! ListCategories ListField('category')
+command! ListSources    ListField('source')
 
 ###################################################
 ##  Filters
