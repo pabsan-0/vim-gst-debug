@@ -74,6 +74,10 @@ command! FilterSource      gst_debug#FilterField("source")
 command! FilterElement     gst_debug#FilterField("element")
 command! FilterElementName gst_debug#FilterField("u_element_name")
 
+command! ListElements   gst_debug#ListField('element')
+command! ListLevels     gst_debug#ListField('level')
+command! ListCategories gst_debug#ListField('category')
+command! ListSources    gst_debug#ListField('source')
 
 # Faster saving for large files: :w is now :noautocmd w
 cnoreabbrev <expr> <buffer> w (getcmdtype() == ':' && getcmdline() == 'w') ? 'noautocmd w' : 'w'
