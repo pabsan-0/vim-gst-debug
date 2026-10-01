@@ -12,9 +12,10 @@ g:loaded_gst_debug = 1
 # Parse environment here
 # TODO VIM_GST_DEBUG_SRC
 
+# Enable the :Debug* commands in gstreamerlogs buffers
+g:gst_debug_debug = get(g:, 'gst_debug_debug', v:true)
 
-export def FTypeSetGstreamerlogs()
-    setlocal filetype=gstreamerlogs
-enddef
 
-command! GstLog call FTypeSetGstreamerlogs()
+# NOTE: a vim9script `def` function cannot be invoked with `:call` from a
+# command, so set the filetype inline instead of calling a helper.
+command! GstLog setlocal filetype=gstreamerlogs
