@@ -1,6 +1,4 @@
-vim9script
-
 augroup GstreamerLogDetect
     autocmd!
-    autocmd BufRead,BufNewFile *.log gst_debug#FTypeDetectGstreamerlogs()
+    autocmd BufRead,BufNewFile *.log call gst_debug#FTypeDetectGstreamerlogs()
 augroup END

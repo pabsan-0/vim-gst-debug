@@ -1,253 +1,266 @@
-vim9script
+" FIXME GST_DEBUG parsing
+" FIXME escape codes
 
-# FIXME GST_DEBUG parsing
-# FIXME escape codes
+" Because user may not be comfortable with switching buffer views
+" let b:buffer_single = get(g:, gst_debug_buffer_single, 1)
+let g:gst_debug_debug = 1
+let g:gst_debug_multiline_scan_len = 50
 
-# Because user may not be comfortable with switching buffer views
-# b:buffer_single = get(g:, gst_debug_buffer_single, true)
-g:gst_debug_debug = true
-g:gst_debug_multiline_scan_len = 50
-
-const s_level_map = {
+let s:level_map = {
       \ 'none': 0, 'ERROR': 1, 'WARN': 2, 'FIXME': 3,
-      \ 'INFO': 4, 'DEBUG': 5, 'LOG': 6, 'TRACE': 7, 'MEMDUMP': 9,
+      \ 'INFO': 4, 'DEBUG': 5, 'LOG': 6, 'TRACE': 7, 'MEMDUMP': 9
       \ }
 
-# Flat schema: Every physical token in the log is a primary column.
-const s_schema = [
-    {name: 'timestamp', parser: '\d\+:\d\+:\d\+\.\d\+', sep: '\s\+', },
-    {name: 'pid',       parser: '\d\+',                 sep: '\s\+', },
-    {name: 'thread',    parser: '0x\x\+',               sep: '\s\+', },
-    {name: 'level',     parser: '[A-Z]\+',              sep: '\s\+', },
-    {name: 'category',  parser: '\S\+',                 sep: '\s\+', },
-    {name: 'file',      parser: '[^:]\+',               sep: ':',    },
-    {name: 'lineno',    parser: '\d\+',                 sep: ':',    },
-    {name: 'function',  parser: '[^:]\+',               sep: ':',    },
-    {name: 'element',   parser: '\%(<[^>]\+>\)\=',      sep: '\s*',  },
-    {name: 'message',   parser: '.*',                   sep: '',     }
-]
+" Flat schema: Every physical token in the log is a primary column.
+let s:schema = [
+    \ {'name': 'timestamp', 'parser': '\d\+:\d\+:\d\+\.\d\+', 'sep': '\s\+'},
+    \ {'name': 'pid',       'parser': '\d\+',                 'sep': '\s\+'},
+    \ {'name': 'thread',    'parser': '0x\x\+',               'sep': '\s\+'},
+    \ {'name': 'level',     'parser': '[A-Z]\+',              'sep': '\s\+'},
+    \ {'name': 'category',  'parser': '\S\+',                 'sep': '\s\+'},
+    \ {'name': 'file',      'parser': '[^:]\+',               'sep': ':'},
+    \ {'name': 'lineno',    'parser': '\d\+',                 'sep': ':'},
+    \ {'name': 'function',  'parser': '[^:]\+',               'sep': ':'},
+    \ {'name': 'element',   'parser': '\%(<[^>]\+>\)\=',      'sep': '\s*'},
+    \ {'name': 'message',   'parser': '.*',                   'sep': ''}
+    \ ]
 
-# Derived schema: Expressions and combinations.
-const s_derived_schema = {
-    _source:   { parent: 'level', expr: (ctx) => $"{ctx.file}:{ctx.lineno}:{ctx.function}"},
-    _levelnum: { parent: 'level', expr: (ctx) => s_level_map[ctx.level] },
-    _findexpr: { parent: 'file',  expr: (ctx) => "^" .. ctx.timestamp .. '\s\+' .. ctx.pid .. '\s\+' .. ctx.thread}
-}
+" Derived schema: Expressions and combinations.
+let s:derived_schema = {
+    \ '_source':   {'parent': 'level', 'expr': {ctx -> ctx.file . ':' . ctx.lineno . ':' . ctx.function}},
+    \ '_levelnum': {'parent': 'level', 'expr': {ctx -> s:level_map[ctx.level]}},
+    \ '_findexpr': {'parent': 'file',  'expr': {ctx -> '^' . ctx.timestamp . '\s\+' . ctx.pid . '\s\+' . ctx.thread}}
+    \ }
 
-# Yields a list of regexes to parse a line.
-# Each regex captures 8 groups and packs the rest of the line in the 9th.
-# This allows chained parsing to overcome Vim's 9 capture groups limitation.
-def BuildRegexChain(): list<string>
-    var regex_chain = []
-    var current_regex = '^'
-    var group_count = 0
+" Yields a list of regexes to parse a line.
+" Each regex captures 8 groups and packs the rest of the line in the 9th.
+" This allows chained parsing to overcome Vim's 9 capture groups limitation.
+function! s:BuildRegexChain() abort
+    let regex_chain = []
+    let current_regex = '^'
+    let group_count = 0
 
-    for field in s_schema
-        # If we'd need a 9th capture group, capture the rest of the line
-        # and initiate a new pattern
+    for field in s:schema
+        " If we'd need a 9th capture group, capture the rest of the line
+        " and initiate a new pattern
         if group_count == 8
-            # Close the current pattern and append it to the output list
-            current_regex ..= '\(.*\)'
-            add(regex_chain, current_regex)
+            " Close the current pattern and append it to the output list
+            let current_regex .= '\(.*\)'
+            call add(regex_chain, current_regex)
 
-            # Initiate a new pattern
-            current_regex = '^'
-            group_count = 0
+            " Initiate a new pattern
+            let current_regex = '^'
+            let group_count = 0
         endif
 
-        current_regex ..= '\(' .. field.parser .. '\)' .. field.sep
-        group_count += 1
+        let current_regex .= '\(' . field.parser . '\)' . field.sep
+        let group_count += 1
     endfor
 
-    # Add the ongoing pattern to the output list
-    if current_regex != '^'
-        add(regex_chain, current_regex)
+    " Add the ongoing pattern to the output list
+    if current_regex !=# '^'
+        call add(regex_chain, current_regex)
     endif
 
     return regex_chain
-enddef
-const s_regex_chain: list<string> = BuildRegexChain()
+endfunction
+let s:regex_chain = s:BuildRegexChain()
 
 
-###################################################
-##  Parsing anf seeking
-###################################################
+"###################################################
+""  Parsing anf seeking
+"###################################################
 
-export def ParseLine(a_lnum: number = -1): list<any>
-    const target_lnum = a_lnum == -1 ? line('.') : a_lnum
+function! gst_debug#ParseLine(...) abort
+    let lnum = a:0 > 0 ? a:1 : -1
+    let target_lnum = lnum == -1 ? line('.') : lnum
 
-    # Outcomes
-    var fields: dict<any> = {}
-    var locs: dict<any> = {}
+    " Outcomes
+    let fields = {}
+    let locs = {}
 
-    # Helpers
-    const original_line = getline(target_lnum)
-    var to_parse = original_line
-    var field_idx = 0
-    var offset = 0
+    " Helpers
+    let original_line = getline(target_lnum)
+    let to_parse = original_line
+    let field_idx = 0
+    let offset = 0
 
-    # Base schema extraction
-    for regex in s_regex_chain
-        var matches = matchlist(to_parse, regex)
+    " Base schema extraction
+    for regex in s:regex_chain
+        let matches = matchlist(to_parse, regex)
         if empty(matches)
             return [fields, locs, target_lnum]
         endif
 
-        var remaining_fields = min([8, len(s_schema) - field_idx])
+        let remaining_fields = min([8, len(s:schema) - field_idx])
         for i in range(remaining_fields)
-            var field_name = s_schema[field_idx].name
-            var val = matches[i + 1]
+            let field_name = s:schema[field_idx].name
+            let val = matches[i + 1]
 
-            # Store the field value
-            fields[field_name] = val
+            " Store the field value
+            let fields[field_name] = val
 
-            # And its location if not null
-            if val != ''
-                var match_idx = stridx(original_line, val, offset)
+            " And its location if not null
+            if val !=# ''
+                let match_idx = stridx(original_line, val, offset)
                 if match_idx >= 0
-                    locs[field_name] = {line: target_lnum, col: match_idx + 1}
-                    offset = match_idx + len(val)
+                    let locs[field_name] = {'line': target_lnum, 'col': match_idx + 1}
+                    let offset = match_idx + len(val)
                 endif
             endif
-            field_idx += 1
+            let field_idx += 1
         endfor
 
-        if len(s_regex_chain) > 1 && field_idx < len(s_schema)
-            to_parse = matches[9]
+        if len(s:regex_chain) > 1 && field_idx < len(s:schema)
+            let to_parse = matches[9]
         endif
     endfor
 
-    # Derived Extraction
-    for [new_field, rule] in items(s_derived_schema)
-        fields[new_field] = rule.expr(fields)
+    " Derived Extraction
+    for pair in items(s:derived_schema)
+        let new_field = pair[0]
+        let rule = pair[1]
+        let fields[new_field] = call(rule.expr, [fields])
         if has_key(locs, rule.parent)
-            locs[new_field] = copy(locs[rule.parent])
+            let locs[new_field] = copy(locs[rule.parent])
         endif
     endfor
 
     return [fields, locs, target_lnum]
-enddef
+endfunction
 
 
-export def ParseMultiLine(a_lnum: number = -1): list<any>
-    const lnum_scan_start = a_lnum == -1 ? line('.') : a_lnum
+function! gst_debug#ParseMultiLine(...) abort
+    let lnum_scan_start = a:0 > 0 ? a:1 : -1
+    if lnum_scan_start == -1
+        let lnum_scan_start = line('.')
+    endif
 
-    var fields: dict<any> = {}
-    var locs: dict<any> = {}
-    var line_log_start: number = -1
+    let fields = {}
+    let locs = {}
+    let line_log_start = -1
 
-    # Upward scan: aims to find a schema-matching log line
+    " Upward scan: aims to find a schema-matching log line
     for line_offset in range(g:gst_debug_multiline_scan_len)
-        var lnum = lnum_scan_start - line_offset
+        let lnum = lnum_scan_start - line_offset
         if lnum <= 0
             break
         endif
 
-        [fields, locs, line_log_start] = ParseLine(lnum)
+        let [fields, locs, line_log_start] = gst_debug#ParseLine(lnum)
         if !empty(fields) && !empty(locs)
             break
         endif
     endfor
 
-    # Downward scan: if log line was found, append further lines to last field
-    const eof_lnum = line('$')
-    const last_field_name = s_schema[-1].name
+    " Downward scan: if log line was found, append further lines to last field
+    let eof_lnum = line('$')
+    let last_field_name = s:schema[-1].name
     if !empty(fields)
         for line_offset in range(g:gst_debug_multiline_scan_len)
-            var lnum = line_log_start + line_offset + 1
+            let lnum = line_log_start + line_offset + 1
 
-            if !empty(ParseLine(lnum)[0]) || lnum > eof_lnum
+            let parsed = gst_debug#ParseLine(lnum)
+            if !empty(parsed[0]) || lnum > eof_lnum
                 break
             endif
 
-            fields[last_field_name] ..= "\n" .. getline(lnum)
+            let fields[last_field_name] .= "\n" . getline(lnum)
         endfor
     endif
 
     return [fields, locs, line_log_start]
-enddef
+endfunction
 
 
-def SearchFieldValueBuildRegex(target_field: string, target_value: string, inverse: bool = false): string
-    var field_found = false
-    var regex = '^'
+function! gst_debug#SearchFieldValueBuildRegex(target_field, target_value, ...) abort
+    let inverse = a:0 > 0 ? a:1 : 0
+    let field_found = 0
+    let regex = '^'
 
-    for field in s_schema
-        if field.name == target_field
-            field_found = true
-            var target_value_safe = escape(target_value, '.\*$^~[]')
+    for field in s:schema
+        if field.name ==# a:target_field
+            let field_found = 1
+            let target_value_safe = escape(a:target_value, '.\*$^~[]')
 
             if inverse
-                regex ..= '\%(' .. target_value_safe .. '\)\@!' .. field.parser
+                let regex .= '\%(' . target_value_safe . '\)\@!' . field.parser
             else
-                regex ..= target_value_safe
+                let regex .= target_value_safe
             endif
             break
         else
-            regex ..= field.parser .. field.sep
+            let regex .= field.parser . field.sep
         endif
     endfor
 
     if !field_found
-        echoerr "Unknown log field: " .. target_field
-        return ""
+        echoerr 'Unknown log field: ' . a:target_field
+        return ''
     endif
 
     return regex
-enddef
+endfunction
 
 
-export def SearchFieldValue(fieldname: string, value: string, backwards: bool = false, inverse: bool = false): bool
-    var regex = SearchFieldValueBuildRegex(fieldname, value, inverse)
+function! gst_debug#SearchFieldValue(fieldname, value, ...) abort
+    let backwards = a:0 >= 1 ? a:1 : 0
+    let inverse = a:0 >= 2 ? a:2 : 0
+    let regex = gst_debug#SearchFieldValueBuildRegex(a:fieldname, a:value, inverse)
     echom regex
 
     if empty(regex)
-        return false
+        return 0
     endif
 
-    var original_pos = getpos('.')
-    var original_search = @/
+    let original_pos = getpos('.')
+    let original_search = @/
 
     execute "normal! m`"
 
-    # If searching backwards, jump to column 1 so we don't match the current line
+    " If searching backwards, jump to column 1 so we don't match the current line
     if backwards
-        execute "normal! 0"
+        execute 'normal! 0'
     endif
 
-    var search_flags = backwards ? 'bW' : 'W'
-    var found_lnum = search(regex, search_flags)
-    @/ = original_search
+    let search_flags = backwards ? 'bW' : 'W'
+    let found_lnum = search(regex, search_flags)
+    let @/ = original_search
 
     if found_lnum > 0
-        CursorToField(fieldname)
-        return true
+        call gst_debug#CursorToField(a:fieldname)
+        return 1
     else
-        setpos('.', original_pos)
-        return false
+        call setpos('.', original_pos)
+        return 0
     endif
-enddef
+endfunction
 
-###################################################
-## Navigation - Horizontal
-###################################################
+"###################################################
+"" Navigation - Horizontal
+"###################################################
 
-def GetFieldUnderCursor(): list<string>
-    const [fields, locs, lnum] = ParseMultiLine(line('.'))
-    if empty(fields) | return ['', ''] | endif
+function! s:GetFieldUnderCursor() abort
+    let parsed = gst_debug#ParseMultiLine(line('.'))
+    let fields = parsed[0]
+    let locs = parsed[1]
+    let lnum = parsed[2]
+    if empty(fields)
+        return ['', '']
+    endif
 
-    var fieldname = ''
-    var fieldvalue = ''
+    let fieldname = ''
+    let fieldvalue = ''
 
-    # Continuation line of a multiline block
+    " Continuation line of a multiline block
     if line('.') > lnum
-        fieldname = s_schema[-1].name
-        fieldvalue = get(fields, fieldname, '')
+        let fieldname = s:schema[-1].name
+        let fieldvalue = get(fields, fieldname, '')
     else
-        for fieldschema in s_schema
+        for fieldschema in s:schema
             if has_key(locs, fieldschema.name) && locs[fieldschema.name].col <= col('.')
-                fieldname = fieldschema.name
-                fieldvalue = get(fields, fieldname, '')
+                let fieldname = fieldschema.name
+                let fieldvalue = get(fields, fieldname, '')
             else
                 break
             endif
@@ -255,139 +268,153 @@ def GetFieldUnderCursor(): list<string>
     endif
 
     return [fieldname, fieldvalue]
-enddef
+endfunction
 
 
-export def CursorToField(fieldname: string, do_visual_select: bool = false)
-    var [fields, locs, lnum] = ParseMultiLine(line('.'))
-    if empty(fields) || !has_key(locs, fieldname)
+function! gst_debug#CursorToField(fieldname, ...) abort
+    let parsed = gst_debug#ParseMultiLine(line('.'))
+    let fields = parsed[0]
+    let locs = parsed[1]
+    if empty(fields) || !has_key(locs, a:fieldname)
         return
     endif
 
     execute "normal! m`"
-    cursor(locs[fieldname].line, locs[fieldname].col)
-enddef
+    call cursor(locs[a:fieldname].line, locs[a:fieldname].col)
+endfunction
 
 
-export def CursorToFieldVisual(fieldname: string)
-    var [fields, locs, lnum] = ParseMultiLine(line('.'))
-    if empty(fields) || !has_key(locs, fieldname)
+function! gst_debug#CursorToFieldVisual(fieldname) abort
+    let parsed = gst_debug#ParseMultiLine(line('.'))
+    let fields = parsed[0]
+    let locs = parsed[1]
+    if empty(fields) || !has_key(locs, a:fieldname)
         return
     endif
     execute "normal! m`"
 
-    var end_line = -1
-    var end_col  = -1
+    let end_line = -1
+    let end_col  = -1
 
-    var val_lines = split(fields[fieldname], '\n', true)
+    let val_lines = split(fields[a:fieldname], '\n', 1)
     if len(val_lines) > 1
-        end_line = locs[fieldname].line + len(val_lines) - 1
-        end_col  = max([1, len(val_lines[-1])])
+        let end_line = locs[a:fieldname].line + len(val_lines) - 1
+        let end_col  = max([1, len(val_lines[-1])])
     else
-        end_line = locs[fieldname].line
-        end_col  = locs[fieldname].col + len(fields[fieldname]) - 1
+        let end_line = locs[a:fieldname].line
+        let end_col  = locs[a:fieldname].col + len(fields[a:fieldname]) - 1
     endif
 
-    cursor(locs[fieldname].line, locs[fieldname].col)
+    call cursor(locs[a:fieldname].line, locs[a:fieldname].col)
     execute "normal! \<Esc>v"
-    cursor(end_line, end_col)
-enddef
+    call cursor(end_line, end_col)
+endfunction
 
 
-###################################################
-## Navigation - Vertical
-###################################################
+"###################################################
+"" Navigation - Vertical
+"###################################################
 
-export def SearchFieldUnderCursor(backwards: bool = false, inverse: bool = false)
-    var [target_field, target_value] = GetFieldUnderCursor()
+function! gst_debug#SearchFieldUnderCursor(...) abort
+    let backwards = a:0 >= 1 ? a:1 : 0
+    let inverse = a:0 >= 2 ? a:2 : 0
+    let target = s:GetFieldUnderCursor()
+    let target_field = target[0]
+    let target_value = target[1]
 
     if empty(target_field)
-        echom "Could not identify field under cursor."
+        echom 'Could not identify field under cursor.'
         return
     endif
 
-    var search_value = split(target_value, '\n', true)[0]
-    SearchFieldValue(target_field, search_value, backwards, inverse)
-enddef
+    let value_lines = split(target_value, '\n', 1)
+    call gst_debug#SearchFieldValue(target_field, value_lines[0], backwards, inverse)
+endfunction
 
 
-export def SearchFieldFromCurrentLine(target_field: string, backwards: bool = false, inverse: bool = false)
-    const [fields, locs, line_log_start] = ParseMultiLine()
+function! gst_debug#SearchFieldFromCurrentLine(target_field, ...) abort
+    let backwards = a:0 >= 1 ? a:1 : 0
+    let inverse = a:0 >= 2 ? a:2 : 0
+    let parsed = gst_debug#ParseMultiLine()
+    let fields = parsed[0]
     if empty(fields)
-        echom $"Could not identify field {target_field}"
+        echom 'Could not identify field ' . a:target_field
         return
     endif
 
-    var target_value = get(fields, target_field, '')
-    var search_value = split(target_value, '\n', true)[0]
-    SearchFieldValue(target_field, search_value, backwards, inverse)
-enddef
+    let target_value = get(fields, a:target_field, '')
+    let value_lines = split(target_value, '\n', 1)
+    call gst_debug#SearchFieldValue(a:target_field, value_lines[0], backwards, inverse)
+endfunction
 
 
-export def SearchFieldCommand(target_field: string, target_value: string = "", backwards: bool = false, inverse: bool = false)
-    if target_value == ""
-        SearchFieldFromCurrentLine(target_field, backwards, inverse)
+function! gst_debug#SearchFieldCommand(target_field, ...) abort
+    let target_value = a:0 >= 1 ? a:1 : ''
+    let backwards = a:0 >= 2 ? a:2 : 0
+    let inverse = a:0 >= 3 ? a:3 : 0
+    if target_value ==# ''
+        call gst_debug#SearchFieldFromCurrentLine(a:target_field, backwards, inverse)
     else
-        SearchFieldValue(target_field, target_value, backwards, inverse)
+        call gst_debug#SearchFieldValue(a:target_field, target_value, backwards, inverse)
     endif
-enddef
+endfunction
 
 
-###################################################
-##  Lists
-###################################################
+"###################################################
+""  Lists
+"###################################################
 
-# FIXME clean up.
-# jump_type is either "first" or "last" (not enforced)
-def JumpToAppearance(jump_type: string)
-    var line_text = getline('.')
-    const target_field = b:target_field
+" FIXME clean up.
+" jump_type is either "first" or "last" (not enforced)
+function! s:JumpToAppearance(jump_type) abort
+    let line_text = getline('.')
+    let target_field = b:target_field
 
-    if line_text =~ '^[-|[:space:]]\+$' || line_text =~ 'Count'
+    if line_text =~# '^[-|[:space:]]\+$' || line_text =~# 'Count'
         return
     endif
 
-    var parts = split(line_text, '\s*|\s*')
+    let parts = split(line_text, '\s*|\s*')
     if len(parts) < 4
         return
     endif
 
-    # Extract and trim the padding from the scratch buffer table
-    var target_val = trim(jump_type == 'first' ? parts[2] : parts[3])
-    var target_buf = get(b:, 'gst_log_bufnr', -1)
+    " Extract and trim the padding from the scratch buffer table
+    let target_val = trim(a:jump_type ==# 'first' ? parts[2] : parts[3])
+    let target_buf = get(b:, 'gst_log_bufnr', -1)
 
     if target_buf == -1 || !bufexists(target_buf)
-        echom "Original log buffer not found or closed."
+        echom 'Original log buffer not found or closed.'
         return
     endif
 
-    var winid = bufwinid(target_buf)
+    let winid = bufwinid(target_buf)
     if winid != -1
-        win_gotoid(winid)
+        call win_gotoid(winid)
     else
-        execute 'sbuffer ' .. target_buf
+        execute 'sbuffer ' . target_buf
     endif
 
-    cursor(1, 1)
+    call cursor(1, 1)
 
-    # \V enables "very nomagic", making all characters literal.
-    # We include the ^ anchor to ensure we only match the start of the line.
-    var search_pattern = '\V\^' .. escape(target_val, '\')
+    " \V enables "very nomagic", making all characters literal.
+    " We include the ^ anchor to ensure we only match the start of the line.
+    let search_pattern = '\V\^' . escape(target_val, '\')
 
     if search(search_pattern, 'cw') > 0
         normal! zz
-        CursorToField(target_field)
+        call gst_debug#CursorToField(target_field)
     else
-        echom "Could not find appearance: " .. target_val
+        echom 'Could not find appearance: ' . target_val
     endif
-enddef
+endfunction
 
-# FIXME have awk script files as assets. Try to regularize for regex single-source-of-truth
-def ListField(target_field: string)
-    const log_bufnr = bufnr('%')
-    echom $"Scanning buffer for {target_field}s via awk..."
+" FIXME have awk script files as assets. Try to regularize for regex single-source-of-truth
+function! s:ListField(target_field) abort
+    let log_bufnr = bufnr('%')
+    echom 'Scanning buffer for ' . a:target_field . 's via awk...'
 
-    const awk_script =<< trim CODE
+    let awk_script =<< trim CODE
         BEGIN {
             num_unique = 0
         }
@@ -471,24 +498,24 @@ def ListField(target_field: string)
         }
     CODE
 
-    const temp_awk = tempname()
-    writefile(awk_script, temp_awk)
+    let temp_awk = tempname()
+    call writefile(awk_script, temp_awk)
 
-    var output: list<string>
-    const clean_target = tolower(target_field)
+    let output = []
+    let clean_target = tolower(a:target_field)
 
     if !&modified && !empty(expand('%'))
-        const cmd = 'awk -v target=' .. shellescape(clean_target) .. ' -f ' .. shellescape(temp_awk) .. ' ' .. shellescape(expand('%'))
-        output = systemlist(cmd)
+        let cmd = 'awk -v target=' . shellescape(clean_target) . ' -f ' . shellescape(temp_awk) . ' ' . shellescape(expand('%'))
+        let output = systemlist(cmd)
     else
-        const cmd = 'awk -v target=' .. shellescape(clean_target) .. ' -f ' .. shellescape(temp_awk)
-        output = systemlist(cmd, getline(1, '$'))
+        let cmd = 'awk -v target=' . shellescape(clean_target) . ' -f ' . shellescape(temp_awk)
+        let output = systemlist(cmd, getline(1, '$'))
     endif
 
-    delete(temp_awk)
+    call delete(temp_awk)
 
     if v:shell_error != 0
-        echoerr "Failed to parse logs using awk."
+        echoerr 'Failed to parse logs using awk.'
         return
     endif
 
@@ -496,13 +523,13 @@ def ListField(target_field: string)
     setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile
     setlocal cursorline
 
-    var title = toupper(clean_target[0]) .. clean_target[1 : ] .. 's'
-    execute 'silent! file [GStreamer ' .. title .. ']'
+    let title = toupper(clean_target[0]) . strpart(clean_target, 1) . 's'
+    execute 'silent! file [GStreamer ' . title . ']'
 
-    setline(1, output)
+    call setline(1, output)
 
-    b:gst_log_bufnr = log_bufnr
-    b:target_field = target_field
+    let b:gst_log_bufnr = log_bufnr
+    let b:target_field = a:target_field
 
 
     syntax match TableDimmed /\.\d\+\s\+\d\+\s\+0x\x\+/
@@ -512,91 +539,95 @@ def ListField(target_field: string)
     hi def link TableStructure Special
     hi def link TableDivider Comment
 
-    nnoremap <buffer> <silent> g1 <ScriptCmd>JumpToAppearance("first")<CR>
-    nnoremap <buffer> <silent> g2 <ScriptCmd>JumpToAppearance("last")<CR>
+    nnoremap <buffer> <silent> g1 :<C-u>call <SID>JumpToAppearance('first')<CR>
+    nnoremap <buffer> <silent> g2 :<C-u>call <SID>JumpToAppearance('last')<CR>
 
     setlocal nomodifiable
-enddef
+endfunction
 
 
-command! ListElements   ListField('element')
-command! ListLevels     ListField('level')
-command! ListCategories ListField('category')
-command! ListSources    ListField('source')
+command! ListElements   call <SID>ListField('element')
+command! ListLevels     call <SID>ListField('level')
+command! ListCategories call <SID>ListField('category')
+command! ListSources    call <SID>ListField('source')
 
-###################################################
-##  Filters
-###################################################
+"###################################################
+""  Filters
+"###################################################
 
-def FilterLevelLower()
-    # Similar to modifying GST_DEBUG= but after log is printed
-enddef
-def FilterBuffer()
-    # Opens a buffer with all unique ids for relevant fields, lets you delete to filter out
-enddef
-def FilterText()
-    # Arbitary grep from input
-enddef
-def FilterVisual()
-    # Arbitrary grep from visual selection
-enddef
+function! s:FilterLevelLower() abort
+    " Similar to modifying GST_DEBUG= but after log is printed
+endfunction
+function! s:FilterBuffer() abort
+    " Opens a buffer with all unique ids for relevant fields, lets you delete to filter out
+endfunction
+function! s:FilterText() abort
+    " Arbitary grep from input
+endfunction
+function! s:FilterVisual() abort
+    " Arbitrary grep from visual selection
+endfunction
 
-def VimRegexToPCRE(vim_regex: string): string
-    var pcre = vim_regex
-    pcre = substitute(pcre, '\\%(\(.\{-}\)\\)\\@!', '(?!\1)', 'g') # Negative Lookahead: \%(X\)\@! -> (?!X)
-    pcre = substitute(pcre, '\\%(', '(?:', 'g')                    # Non-capturing groups: \%(X\) -> (?:X)
-    pcre = substitute(pcre, '\\)', ')', 'g')                       # Escaped parenthesis: \) -> )
-    pcre = substitute(pcre, '\\x', '[0-9a-fA-F]', 'g')             # Hexadecimal character class: \x -> [0-9a-fA-F]
-    pcre = substitute(pcre, '\\+', '+', 'g')                       # One or more: \+ -> +
-    pcre = substitute(pcre, '\\=', '?', 'g')                       # Zero or one: \= -> ?
+function! s:VimRegexToPCRE(vim_regex) abort
+    let pcre = a:vim_regex
+    let pcre = substitute(pcre, '\\%(\(.\{-}\)\\)\\@!', '(?!\1)', 'g') " Negative Lookahead: \%(X\)\@! -> (?!X)
+    let pcre = substitute(pcre, '\\%(', '(?:', 'g')                    " Non-capturing groups: \%(X\) -> (?:X)
+    let pcre = substitute(pcre, '\\)', ')', 'g')                       " Escaped parenthesis: \) -> )
+    let pcre = substitute(pcre, '\\x', '[0-9a-fA-F]', 'g')             " Hexadecimal character class: \x -> [0-9a-fA-F]
+    let pcre = substitute(pcre, '\\+', '+', 'g')                       " One or more: \+ -> +
+    let pcre = substitute(pcre, '\\=', '?', 'g')                       " Zero or one: \= -> ?
     return pcre
-enddef
+endfunction
 
-export def FilterField(fieldname: string, inverse: bool = false)
-    const cur_pos = getcurpos()
-    const fields = ParseMultiLine(cur_pos[1])[0]
-    const value = get(fields, fieldname, '')
+function! gst_debug#FilterField(fieldname, ...) abort
+    let inverse = a:0 > 0 ? a:1 : 0
+    let cur_pos = getcurpos()
+    let parsed = gst_debug#ParseMultiLine(cur_pos[1])
+    let fields = parsed[0]
+    let value = get(fields, a:fieldname, '')
 
-    if value == ''
-        echom "Cannot parse " .. fieldname .. " field from current line. Must be in schema."
+    if value ==# ''
+        echom 'Cannot parse ' . a:fieldname . ' field from current line. Must be in schema.'
         return
     endif
 
-    const vim_regex = SearchFieldValueBuildRegex(fieldname, value, inverse)
-    const pcre_regex = VimRegexToPCRE(vim_regex)
-    execute $":%!rg -P '{pcre_regex}'"
+    let vim_regex = gst_debug#SearchFieldValueBuildRegex(a:fieldname, value, inverse)
+    let pcre_regex = s:VimRegexToPCRE(vim_regex)
+    execute "%!rg -P '" . pcre_regex . "'"
 
-    # Attempt to restore cursor safely
-    cursor(1, 1)
+    " Attempt to restore cursor safely
+    call cursor(1, 1)
     if !search(fields._findexpr, 'cw')
-        echom "Filter applied. Original line was filtered out."
+        echom 'Filter applied. Original line was filtered out.'
     else
-        cursor(0, cur_pos[2])
+        call cursor(0, cur_pos[2])
     endif
-enddef
+endfunction
 
-def FilterReset()
-enddef
+function! s:FilterReset() abort
+endfunction
 
-###################################################
-##  Filetype
-###################################################
+"###################################################
+""  Filetype
+"###################################################
 
-export def FTypeDetectGstreamerlogs()
-    # If the filetype is already set to something, bail out
-    if &filetype != '' | return | endif
+function! gst_debug#FTypeDetectGstreamerlogs() abort
+    " If the filetype is already set to something, bail out
+    if &filetype !=# ''
+        return
+    endif
 
-    # Count how many lines start with the GStreamer timestamp format
-    # If 5 or more lines match, assign the filetype
-    var lines = getline(1, 20)
-    var match_count = 0
+    " Count how many lines start with the GStreamer timestamp format
+    " If 5 or more lines match, assign the filetype
+    let lines = getline(1, 20)
+    let match_count = 0
     for line in lines
         if line =~# '^\d\+:\d\+:\d\+\.\d\+'
-            match_count += 1
+            let match_count += 1
         endif
     endfor
 
     if match_count >= 5
         setlocal filetype=gstreamerlogs
     endif
-enddef
+endfunction
