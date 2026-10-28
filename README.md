@@ -15,6 +15,12 @@ To handle large files, this plugin will be built on [pabsan-0/vim-paginate](http
 Plug 'pabsan-0/vim-gst-debug'
 ```
 
+Users that don't want to maintain their own vim environment can also install a portable version with:
+
+```
+curl -fsSL https://raw.githubusercontent.com/pabsan-0/vim-gst-debug/master/install.sh | bash
+```
+
 ## Usage
 
 The `gstreamerlogs` filetype is assigned when either:
