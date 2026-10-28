@@ -9,6 +9,13 @@ REPO_URL="https://github.com/pabsan-0/vim-gst-debug.git"
 PAGINATE_REPO_URL="https://github.com/pabsan-0/vim-paginate.git"
 PAGINATE_DIR="${PAGINATE_DIR:-$HOME/.local/share/vim-paginate}"
 
+echo "==> Checking dependencies..."
+
+if ! command -v git >/dev/null 2>&1; then
+    echo "Error: git is required for the installation." >&2
+    exit 1
+fi
+
 if ! command -v vim >/dev/null 2>&1; then
     echo "Error: vim is required." >&2
     exit 1
@@ -20,6 +27,18 @@ if ! vim --clean -es \
     echo "Error: vim-gst-debug requires Vim 9 with +vim9script." >&2
     exit 1
 fi
+
+if ! command -v rg >/dev/null 2>&1; then
+    echo "Error: ripgrep (rg) is required by vim-paginate." >&2
+    exit 1
+fi
+
+for dep in split wc df; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+        echo "Error: coreutils '$dep' is required by vim-paginate." >&2
+        exit 1
+    fi
+done
 
 echo "==> Installing vim-gst-debug..."
 
