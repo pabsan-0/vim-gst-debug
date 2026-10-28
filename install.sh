@@ -66,12 +66,17 @@ set noswapfile
 set nobackup
 set nowritebackup
 
-" Add the plugin to the runtimepath so it loads automatically
+" Add the plugin to the runtimepath so its ftplugin/syntax files load
 let s:root = expand('<sfile>:p:h')
 let &runtimepath = s:root . ',' . &runtimepath
 filetype plugin indent on
 syntax on
-runtime! plugin/**/*.vim
+
+" Load only this plugin, not any other plugin scripts
+execute 'source ' . fnameescape(s:root . '/plugin/gst_debug.vim')
+
+" Viewer default: allow quitting without saving modifications
+autocmd QuitPre * if &filetype ==# 'gstreamerlogs' | setlocal nomodified | endif
 EOF
 
 # Generate the wrapper script
@@ -87,8 +92,9 @@ if [ "\$#" -eq 0 ]; then
 fi
 
 # --clean ignores user vimrc/plugins for a pure, fast, isolated pager experience
+# --noplugin prevents loading any other plugin scripts
 # -u loads our dedicated minimal config; GstLog forces the log filetype
-exec vim --clean \\
+exec vim --clean --noplugin \\
     -u "${VIMRC_FILE}" \\
     -c 'GstLog' \\
     -- "\$1"

@@ -13,8 +13,4 @@ g:loaded_gst_debug = 1
 # TODO VIM_GST_DEBUG_SRC
 
 
-export def FTypeSetGstreamerlogs()
-    setlocal filetype=gstreamerlogs
-enddef
-
-command! GstLog call FTypeSetGstreamerlogs()
+command! GstLog setlocal filetype=gstreamerlogs
