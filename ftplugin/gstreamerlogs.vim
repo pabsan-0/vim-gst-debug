@@ -74,6 +74,8 @@ command! FilterSource      gst_debug#FilterField("source")
 command! FilterElement     gst_debug#FilterField("element")
 command! FilterElementName gst_debug#FilterField("u_element_name")
 
+command! -range=% -nargs=? GstTimeOffset call gst_debug#TimeOffset('<q-args>', <line1>, <line2>)
+
 command! ListElements   gst_debug#ListField('element')
 command! ListLevels     gst_debug#ListField('level')
 command! ListCategories gst_debug#ListField('category')

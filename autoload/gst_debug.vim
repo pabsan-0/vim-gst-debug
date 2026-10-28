@@ -15,7 +15,7 @@ const s_level_map = {
 
 # Flat schema: Every physical token in the log is a primary column.
 const s_schema = [
-    {name: 'timestamp', parser: '\d\+:\d\+:\d\+\.\d\+', sep: '\s\+', },
+    {name: 'timestamp', parser: '\d\+:\d\+:\d\+\.\d\+\%(_\d\{8\}\)\=', sep: '\s\+', },
     {name: 'pid',       parser: '\d\+',                 sep: '\s\+', },
     {name: 'thread',    parser: '0x\x\+',               sep: '\s\+', },
     {name: 'level',     parser: '[A-Z]\+',              sep: '\s\+', },
@@ -394,7 +394,7 @@ export def ListField(target_field: string)
         {
             # 1. Enforce strict log conformance.
             # Matches: timestamp + spaces + PID + spaces + thread (0xHEX)
-            if (!match($0, /^[0-9]+:[0-9]+:[0-9]+\.[0-9]+[ \t]+[0-9]+[ \t]+0x[0-9a-fA-F]+/)) {
+            if (!match($0, /^[0-9]+:[0-9]+:[0-9]+\.[0-9]+(_[0-9]+)?[ \t]+[0-9]+[ \t]+0x[0-9a-fA-F]+/)) {
                 next
             }
 
@@ -549,6 +549,7 @@ def VimRegexToPCRE(vim_regex: string): string
     pcre = substitute(pcre, '\\x', '[0-9a-fA-F]', 'g')             # Hexadecimal character class: \x -> [0-9a-fA-F]
     pcre = substitute(pcre, '\\+', '+', 'g')                       # One or more: \+ -> +
     pcre = substitute(pcre, '\\=', '?', 'g')                       # Zero or one: \= -> ?
+    pcre = substitute(pcre, '\\{\([0-9]\+\)\\}', '{\1}', 'g')       # Exactly n: \{n\} -> {n}
     return pcre
 enddef
 
@@ -576,6 +577,102 @@ export def FilterField(fieldname: string, inverse: bool = false)
 enddef
 
 def FilterReset()
+enddef
+
+###################################################
+##  Time offset
+###################################################
+
+# Days since 1970-01-01 (Hinnant civil algorithm, timezone-free).
+def DaysFromCivil(y: number, m: number, d: number): number
+    const yy = y - (m <= 2 ? 1 : 0)
+    const era = (yy >= 0 ? yy : yy - 399) / 400
+    const yoe = yy - era * 400
+    const doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1
+    const doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+enddef
+
+def CivilFromDays(z: number): list<number>
+    const zz = z + 719468
+    const era = (zz >= 0 ? zz : zz - 146096) / 146097
+    const doe = zz - era * 146097
+    const yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    const yy = yoe + era * 400
+    const doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    const mp = (5 * doy + 2) / 153
+    const dd = doy - (153 * mp + 2) / 5 + 1
+    const mm = mp + (mp < 10 ? 3 : -9)
+    return [yy + (mm <= 2 ? 1 : 0), mm, dd]
+enddef
+
+def FindTimestamp(text: string): string
+    const m = matchlist(text, '\d\{8\}\(_\d\{6\}\)\?')
+    if empty(m)
+        return ''
+    endif
+    return m[1] == '' ? m[0] .. '_000000' : m[0]
+enddef
+
+def ResolveWallclock(): string
+    const sources = [
+        [expand('%:t'), 'filename'],
+        [expand('%:p:h'), 'path'],
+        [getenv('VIM_GST_DEBUG_TIME_START'), '$VIM_GST_DEBUG_TIME_START'],
+    ]
+    for [src, label] in sources
+        const cand = src == v:null ? '' : FindTimestamp(src)
+        if cand == ''
+            continue
+        endif
+        const ans = input('GstTimeOffset: ' .. label .. ' has "' .. cand .. '". Enter to use, clear to skip: ', cand)
+        if ans != ''
+            return ans
+        endif
+    endfor
+    return ''
+enddef
+
+export def TimeOffset(wallclock: string, line1: number, line2: number)
+    var wc = substitute(trim(wallclock), '["'']', '', 'g')
+    if wc == ''
+        wc = ResolveWallclock()
+        if wc == ''
+            echoerr "GstTimeOffset: no timestamp found in filename, path, or $VIM_GST_DEBUG_TIME_START"
+            return
+        endif
+    endif
+    if len(wc) != 15 || wc[8] != '_'
+        echoerr "Expected format YYYYMMDD_HHMMSS, got: " .. wc
+        return
+    endif
+
+    const base_days = DaysFromCivil(str2nr(wc[0 : 3]), str2nr(wc[4 : 5]), str2nr(wc[6 : 7]))
+    const wall_secs = str2nr(wc[9 : 10]) * 3600 + str2nr(wc[11 : 12]) * 60 + str2nr(wc[13 : 14])
+
+    for lnum in range(line1, line2)
+        const line = getline(lnum)
+        const m = matchlist(line, '^\(\d\+\):\(\d\+\):\(\d\+\)\.\(\d\+\)')
+        if empty(m)
+            continue
+        endif
+
+        var frac = m[4]
+        if len(frac) < 9
+            frac ..= repeat('0', 9 - len(frac))
+        endif
+        const rel_secs = str2nr(m[1]) * 3600 + str2nr(m[2]) * 60 + str2nr(m[3])
+        const total_secs = wall_secs + rel_secs
+
+        const [y, mo, d] = CivilFromDays(base_days + total_secs / 86400)
+        const tod = total_secs % 86400
+        const new_ts = printf('%02d:%02d:%02d.%09d_%04d%02d%02d',
+              \ tod / 3600, (tod % 3600) / 60, tod % 60, str2nr(frac), y, mo, d)
+
+        setline(lnum, new_ts .. line[len(m[0]) :])
+    endfor
+
+    syntax match GstTimestamp /^\d\+:\d\+:\d\+\.\d\+_\d\{8\}/ nextgroup=GstPid skipwhite
 enddef
 
 ###################################################
